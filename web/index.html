@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="Realist tracks home sale prices in Philadelphia, New York City and Chicago from public records, refreshed daily by an automated data pipeline." />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;600&display=swap" />
+    <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
+    <meta name="theme-color" content="#121416" />
+    <title>Realist | Home sale analytics from public records</title>
+    <script>
+      /* Theme before first paint: ?theme=light|dark (for sharing and screenshots), else the saved choice, else the OS, else dark. */
+      (function (d) {
+        var t = 'dark', ok = function (v) { return v === 'light' || v === 'dark' }
+        try {
+          var q = new URLSearchParams(location.search).get('theme'), s = localStorage.getItem('realist-theme')
+          t = ok(q) ? q : ok(s) ? s : matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark'
+        } catch (e) {}
+        d.dataset.theme = t
+        if (t === 'light') document.querySelector('meta[name="theme-color"]').setAttribute('content', '#eef2ef')
+      })(document.documentElement)
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

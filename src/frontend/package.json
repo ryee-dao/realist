@@ -1,6 +1,0 @@
-{
-  "dependencies": {
-    "realist-app": "file:../.."
-  },
-  "type": "module"
-}

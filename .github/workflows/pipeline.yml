@@ -1,0 +1,94 @@
+name: Data pipeline
+
+# Harvests new public records every day, checks them, and republishes the site.
+# The harvest store lives on the `data` branch; the site is deployed to GitHub Pages.
+
+on:
+  schedule:
+    - cron: "17 9 * * *"        # daily, 09:17 UTC (early morning US Eastern)
+  workflow_dispatch:
+    inputs:
+      full:
+        description: "Re-pull the full history instead of the recent window"
+        type: boolean
+        default: false
+  push:
+    branches: [main]
+    paths: ["engine/**", "web/**", ".github/workflows/pipeline.yml"]
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pipeline
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check out the harvest store (data branch)
+        run: |
+          if git ls-remote --exit-code --heads origin data >/dev/null; then
+            git clone --depth 1 --branch data "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" store
+          else
+            mkdir store && cd store && git init -q -b data
+            git remote add origin "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git"
+          fi
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Engine tests
+        run: python -m unittest discover -s engine/tests -v
+
+      - name: Harvest, validate and build analytics
+        env:
+          SOCRATA_APP_TOKEN: ${{ secrets.SOCRATA_APP_TOKEN }}   # optional, raises API rate limits
+        run: python -m engine run ${{ inputs.full && '--full' || '' }}
+
+      - name: Save the harvest store
+        if: always()
+        run: |
+          cd store
+          git config user.name "realist-pipeline"
+          git config user.email "actions@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "Store unchanged."
+          else
+            git commit -q -m "Harvest $(date -u +%Y-%m-%dT%H:%MZ)"
+            git push -q origin data
+          fi
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Fetch recent for-sale listings
+        continue-on-error: true   # cities with a failed pull display a feed-unavailable state
+        run: python -m engine.live_listings
+
+      - name: Build the site
+        working-directory: web
+        run: |
+          npm ci
+          npm run build
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: web/dist
+      - id: deploy
+        uses: actions/deploy-pages@v4

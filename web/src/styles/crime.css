@@ -1,0 +1,78 @@
+/* Crime compare page: three presentation styles of the same police data. Tokens only. */
+.crime-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px 16px; }
+.crime-bar .field { flex-direction: row; align-items: center; gap: 8px; }
+.crime-wrap { position: relative; }
+.crime-tip { position: absolute; z-index: 700; }
+
+/* ---- sections ---- */
+.crime-split { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 16px; align-items: start; }
+.crime-map { height: 540px; }
+.crime-panel { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+.crime-panel select { width: 100%; }
+.crime-panel h4 { margin: 0; font-size: 17px; font-weight: 700; color: var(--text); }
+.crime-panel .sub { color: var(--muted); font-size: 12.5px; margin-top: 2px; }
+.meter-row { display: grid; gap: 5px; }
+.meter-top { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; font-size: 12.5px; color: var(--text-2); }
+.meter-top b { font: 600 15px var(--mono); color: var(--text); }
+.meter-top small { color: var(--muted); font: 500 11.5px var(--mono); }
+.meter { position: relative; height: 12px; border-radius: 4px; background: var(--surface-2); }
+.meter-fill { position: absolute; top: 0; bottom: 0; border-radius: 4px; background: var(--series-1); }
+.meter-city { position: absolute; top: -4px; bottom: -4px; width: 2px; margin-left: -1px; background: var(--text); border-radius: 1px; }
+.meter-zero { position: absolute; top: -2px; bottom: -2px; width: 1px; background: var(--line-strong); }
+.key-box.hollow { border: 1px dashed var(--line-strong); background: transparent; }
+.key-line.city { width: 2px; height: 12px; background: var(--text); }
+
+/* ---- ranked ---- */
+.rank-tools { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.rank-tools .field { flex: 1 1 150px; }
+.rank-tools input { width: 100%; }
+.rank-list { max-height: 640px; overflow-y: auto; overflow-x: hidden; border-top: 1px solid var(--line); }
+.rank-row {
+  display: grid; align-items: center; gap: 2px 12px; padding: 3px 6px; border-radius: 6px; cursor: pointer;
+  grid-template-columns: minmax(0, 13rem) minmax(0, 1fr) 3.6rem 8.4rem 4.6rem;
+  grid-template-areas: "name bar rate chg price";
+}
+.rank-row:hover { background: var(--surface-2); }
+.rank-row.sel { background: var(--brand-soft); }
+.rank-row.head { position: sticky; top: 0; z-index: 2; background: var(--surface); cursor: default; padding-top: 22px; padding-bottom: 6px; border-bottom: 1px solid var(--line); border-radius: 0; }
+.rank-row.head span { font: 500 10.5px var(--mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+.rank-name { grid-area: name; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; color: var(--text); }
+.rank-name small { color: var(--muted); margin-left: 5px; }
+.rank-bar { grid-area: bar; position: relative; height: 16px; }
+.rank-fill { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 0 4px 4px 0; background: var(--series-1); }
+.rank-fill.over { border-radius: 0; }
+.rank-fill.over::after { content: ""; position: absolute; right: 7px; top: -2px; bottom: -2px; width: 3px; background: var(--surface); transform: skewX(-20deg); }
+.rank-city { position: absolute; top: -3px; bottom: -3px; width: 2px; margin-left: -1px; background: var(--text); }
+.rank-row.head .rank-bar { height: auto; }
+.rank-city-label { position: absolute; bottom: 2px; transform: translateX(-50%); white-space: nowrap; font: 600 11px var(--mono) !important; color: var(--text) !important; letter-spacing: 0 !important; text-transform: none !important; }
+.rank-rate { grid-area: rate; text-align: right; font: 600 13px var(--mono); color: var(--text); }
+.rank-chg { grid-area: chg; text-align: right; font: 500 12px var(--mono); color: var(--text-2); white-space: nowrap; }
+.rank-chg .arrow { font-size: 9px; }
+.rank-chg .flat { color: var(--muted); }
+.rank-price { grid-area: price; text-align: right; font: 500 12px var(--mono); color: var(--text-2); }
+.rank-note { margin: 8px 0 0; color: var(--muted); font-size: 12.5px; }
+
+/* ---- scatter ---- */
+.scatter-scroll { overflow-x: auto; overflow-y: hidden; }
+.scatter .guide { stroke: var(--line-strong); stroke-width: 1; stroke-dasharray: 4 3; }
+.scatter .quad { fill: var(--muted); font: 500 11.5px var(--font); }
+.scatter .halo { paint-order: stroke; stroke: var(--surface); stroke-width: 3px; stroke-linejoin: round; }
+.scatter .dot { fill: var(--series-1); fill-opacity: 0.8; stroke: var(--surface); stroke-width: 2; cursor: pointer; }
+.scatter .dot.sel { fill-opacity: 1; stroke: var(--text); stroke-width: 2.5; }
+.scatter .dot.dim { fill-opacity: 0.35; }
+.scatter .lab { fill: var(--text-2); font: 600 11.5px var(--font); pointer-events: none; }
+.scatter .guide-lab { fill: var(--text-2); font: 500 10.5px var(--mono); }
+.scatter .axis-title { fill: var(--text-2); font: 500 11.5px var(--font); }
+
+@media (max-width: 900px) {
+  .crime-split { grid-template-columns: 1fr; }
+  .crime-map { height: 420px; }
+}
+@media (max-width: 640px) {
+  .rank-row { grid-template-columns: minmax(0, 1fr) auto 3.4rem; grid-template-areas: "name chg price" "bar bar rate"; }
+  .rank-row.head { grid-template-areas: "name name name" "bar bar rate"; }
+  .rank-row.head .rank-chg, .rank-row.head .rank-price, .rank-row.head .rank-name { display: none; }
+  .rank-tools { flex: 1 1 100%; }
+  .scatter .quad { font-size: 10.5px; }
+  .crime-map { height: 360px; }
+}

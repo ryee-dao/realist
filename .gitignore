@@ -1,21 +1,12 @@
-**/__pycache__
-**/.pytest_cache
-**/.DS_Store
-**/.idea
-**/*.egg-info/
-**/.vscode
-.coverage
-*.json
-*.xlsx
-*.csv
-*.log
-/.venv
-**/.env
-**/build
-**/node_modules
-**/dist
-celerybeat-schedule
+__pycache__/
+*.pyc
+.DS_Store
+.idea/
+.vscode/
+.env
+node_modules/
+web/dist/
 
-## EXCLUSIONS ##
-!**/tests/data/*.json
-!**/package.json
+# The harvest store lives on the `data` branch, and the site's JSON is rebuilt from it on every run.
+/store/
+/web/public/data/
