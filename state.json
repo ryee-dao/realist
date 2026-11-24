@@ -1,6 +1,9 @@
 {
  "chicago": {
   "backfilled": true,
+  "census_rents_checked": "2026-11-24",
+  "census_rents_version": "2024|Thu, 29 Jan 2026 13:13:09 GMT",
+  "census_rents_year": 2024,
   "crime_through": "2026-10",
   "last_pull": {
    "Assessor parcel sales + parcel lookups": {
@@ -20,6 +23,8 @@
   },
   "listings_month": "2026-10",
   "listings_version": "\"23aaa42cc31a4e5ad3db7717ba303631-2\"|\"e795960810e15d5790b1e7ccafca2a84\"|\"2cf572912c92a51f745e4f66554179ec\"|\"7673a88798f6894e355d447fc8e63c41-2\"",
+  "safmr_checked": "2026-11-24",
+  "safmr_year": "2027",
   "sales_updated_at": 1794745762
  },
  "nyc": {
@@ -29,6 +34,9 @@
   "annual_updated_at": 1781030005,
   "backfill_start": "2019-01-01",
   "backfilled": true,
+  "census_rents_checked": "2026-11-24",
+  "census_rents_version": "2024|Thu, 29 Jan 2026 13:13:09 GMT",
+  "census_rents_year": 2024,
   "crime_through": "2026-09",
   "finance_max_date": "2026-09-30",
   "last_pull": {
@@ -64,11 +72,16 @@
   },
   "listings_month": "2026-10",
   "listings_version": "\"23aaa42cc31a4e5ad3db7717ba303631-2\"|\"e795960810e15d5790b1e7ccafca2a84\"|\"2cf572912c92a51f745e4f66554179ec\"|\"7673a88798f6894e355d447fc8e63c41-2\"",
-  "rolling_updated_at": 1792079407
+  "rolling_updated_at": 1792079407,
+  "safmr_checked": "2026-11-24",
+  "safmr_year": "2027"
  },
  "philadelphia": {
   "assessment_year": "2027",
   "backfilled": true,
+  "census_rents_checked": "2026-11-24",
+  "census_rents_version": "2024|Thu, 29 Jan 2026 13:13:09 GMT",
+  "census_rents_year": 2024,
   "characteristics_pulled": "2026-11-24",
   "crime_through": "2026-10",
   "last_pull": {
@@ -114,6 +127,8 @@
    }
   },
   "listings_month": "2026-10",
-  "listings_version": "\"23aaa42cc31a4e5ad3db7717ba303631-2\"|\"e795960810e15d5790b1e7ccafca2a84\"|\"2cf572912c92a51f745e4f66554179ec\"|\"7673a88798f6894e355d447fc8e63c41-2\""
+  "listings_version": "\"23aaa42cc31a4e5ad3db7717ba303631-2\"|\"e795960810e15d5790b1e7ccafca2a84\"|\"2cf572912c92a51f745e4f66554179ec\"|\"7673a88798f6894e355d447fc8e63c41-2\"",
+  "safmr_checked": "2026-11-24",
+  "safmr_year": "2027"
  }
 }
