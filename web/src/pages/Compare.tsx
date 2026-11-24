@@ -1,10 +1,10 @@
 import '../styles/crime.css'
-import { ReactNode, useEffect, useMemo, useRef, useState } from 'react'
-import L from 'leaflet'
+import { ReactNode, useEffect, useMemo, useState } from 'react'
 import { Area, Areas, City, Grid, useData } from '../lib/data'
 import { cssVar, Theme } from '../lib/hooks'
 import { monthLabel, num, pct, usd, usdCompact } from '../lib/format'
 import { classOf, quintiles, SCALE } from '../components/MapView'
+import SectionMap, { escapeHtml, SectionFill } from '../components/SectionMap'
 import { Delta, Segmented, StatTile } from '../components/bits'
 
 type Metric = 'violent' | 'property' | 'change' | 'price'
@@ -75,86 +75,10 @@ function classify(areas: Area[], m: Metric): Classing {
 }
 
 function tipHtml(a: Area) {
-  const esc = (s: string) => s.replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]!))
+  const esc = escapeHtml
   return `<b>${esc(a.name)}</b>${a.group ? ` <span style="color:var(--muted)">${esc(a.group)}</span>` : ''}<br>` +
     `Violent ${r1(a.violentRate)} · Property ${r1(a.propertyRate)} per 1,000<br>` +
     `Change: ${changeText(a, 'no clear change')} · Median ${usdCompact(a.median12)}`
-}
-
-function SectionsMap({ city, theme, grid, areas, metric, classing, selected, onSelect }: {
-  city: City; theme: Theme; grid: Grid; areas: Area[]; metric: Metric; classing: Classing; selected: number; onSelect: (i: number) => void
-}) {
-  const el = useRef<HTMLDivElement>(null)
-  const map = useRef<L.Map | null>(null)
-  const fill = useRef<L.LayerGroup | null>(null)
-  const outline = useRef<L.LayerGroup | null>(null)
-  const renderer = useRef<L.Canvas | null>(null)
-  const select = useRef(onSelect)
-  select.current = onSelect
-
-  useEffect(() => {
-    const m = L.map(el.current!, { scrollWheelZoom: false, zoomSnap: 0.5 }).setView(city.center, city.zoom)
-    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
-      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors', maxZoom: 17,
-    }).addTo(m)
-    m.on('click', () => m.scrollWheelZoom.enable())
-    m.on('mouseout', () => m.scrollWheelZoom.disable())
-    renderer.current = L.canvas({ padding: 0.5 })
-    fill.current = L.layerGroup().addTo(m)
-    outline.current = L.layerGroup().addTo(m)
-    map.current = m
-    const g = grid.columns
-    const pts: L.LatLngTuple[] = []
-    for (let i = 0; i < g.lat.length; i++) if (g.area[i] >= 0) pts.push([g.lat[i], g.lon[i]])
-    if (pts.length) m.fitBounds(L.latLngBounds(pts), { padding: [8, 8] })
-    return () => { m.remove(); map.current = null }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
-
-  useEffect(() => {
-    const group = fill.current!
-    group.clearLayers()
-    const colors = [1, 2, 3, 4, 5].map((k) => cssVar(`--${RAMP[metric]}-${k}`))
-    const g = grid.columns
-    const h = grid.cell / 2
-    for (let i = 0; i < g.lat.length; i++) {
-      const ai = g.area[i]
-      if (ai < 0 || !areas[ai]) continue
-      const c = classing.cls[ai]
-      const a = areas[ai]
-      L.rectangle([[g.lat[i] - h, g.lon[i] - h], [g.lat[i] + h, g.lon[i] + h]], {
-        renderer: renderer.current!, stroke: false,
-        fillColor: c == null ? cssVar('--surface-2') : colors[c], fillOpacity: c == null ? 0 : 0.85,
-      })
-        .bindTooltip(() => tipHtml(a), { className: 'map-tip', sticky: true })
-        .on('click', (e) => { L.DomEvent.stopPropagation(e); select.current(ai) })
-        .addTo(group)
-    }
-  }, [grid, areas, metric, classing, theme])
-
-  // Outline the selected area: draw only the cell edges that border another area.
-  useEffect(() => {
-    const group = outline.current!
-    group.clearLayers()
-    const g = grid.columns
-    const s = grid.cell
-    const h = s / 2
-    const key = (la: number, lo: number) => `${Math.round(la / s)},${Math.round(lo / s)}`
-    const mine = new Set<string>()
-    for (let i = 0; i < g.lat.length; i++) if (g.area[i] === selected) mine.add(key(g.lat[i], g.lon[i]))
-    const segs: L.LatLngTuple[][] = []
-    for (let i = 0; i < g.lat.length; i++) {
-      if (g.area[i] !== selected) continue
-      const la = g.lat[i], lo = g.lon[i]
-      if (!mine.has(key(la + s, lo))) segs.push([[la + h, lo - h], [la + h, lo + h]])
-      if (!mine.has(key(la - s, lo))) segs.push([[la - h, lo - h], [la - h, lo + h]])
-      if (!mine.has(key(la, lo + s))) segs.push([[la - h, lo + h], [la + h, lo + h]])
-      if (!mine.has(key(la, lo - s))) segs.push([[la - h, lo - h], [la + h, lo - h]])
-    }
-    if (segs.length) L.polyline(segs, { renderer: renderer.current!, color: cssVar('--text'), weight: 2.5, interactive: false }).addTo(group)
-  }, [grid, selected, theme])
-
-  return <div ref={el} className="map crime-map" />
 }
 
 function Meter({ label, value, cityValue, lo, hi, log, zero, fmt, text, cityText, color }: {
@@ -222,6 +146,11 @@ function Sections({ city, theme, areas, selected, onSelect }: { city: City; them
   const { data: grid } = useData<Grid>(`${city.id}/grid.json`)
   const [metric, setMetric] = useState<Metric>(() => METRICS.find((m) => m.id === new URLSearchParams(window.location.search).get('metric'))?.id ?? 'violent')
   const classing = useMemo(() => classify(areas, metric), [areas, metric])
+  const fillOf = useMemo(() => {
+    const colors = [1, 2, 3, 4, 5].map((k) => cssVar(`--${RAMP[metric]}-${k}`))
+    return (ai: number): SectionFill | null => { const c = classing.cls[ai]; return c == null ? null : { color: colors[c] } }
+  }, [classing, metric, theme])   // eslint-disable-line react-hooks/exhaustive-deps
+  const tipOf = useMemo(() => (ai: number) => (areas[ai] ? tipHtml(areas[ai]) : ''), [areas])
   const missing = classing.cls.some((c) => c == null)
   return (
     <>
@@ -230,7 +159,7 @@ function Sections({ city, theme, areas, selected, onSelect }: { city: City; them
       </div>
       <div className="crime-split">
         <div>
-          {grid ? <SectionsMap city={city} theme={theme} grid={grid} areas={areas} metric={metric} classing={classing} selected={selected} onSelect={onSelect} />
+          {grid ? <SectionMap className="crime-map" city={city} theme={theme} grid={grid} fillOf={fillOf} tipOf={tipOf} selected={selected} onSelect={onSelect} />
             : <div className="map crime-map loading">Loading the map…</div>}
           <Legend metric={metric} labels={classing.legend} extra={missing && <span><i className="key-box hollow" />No figure</span>} />
         </div>

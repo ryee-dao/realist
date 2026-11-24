@@ -1,7 +1,7 @@
 import { ReactNode, useState } from 'react'
 
 interface Props {
-  title: string
+  title: ReactNode
   subtitle?: string
   children: ReactNode
   /** Rows for the "view as table" toggle: the same numbers the chart draws. */

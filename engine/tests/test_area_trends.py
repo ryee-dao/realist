@@ -31,13 +31,20 @@ class AreaSeriesTests(unittest.TestCase):
         self.assertEqual(busy["count"][-1], 6)
         self.assertLess(busy["median"][-1], 400000)   # the filling-in month never enters
         self.assertEqual(busy["kpi"]["sales12"], 72)
-        self.assertFalse(busy["kpi"]["thin"])
+        self.assertFalse(any(busy["kpi"]["few"].values()))
+        self.assertEqual(busy["medianN"][-1], 18)                  # sales behind the rolling 3-month point
         self.assertEqual(sum(busy["hist"]["counts"]), 72)
 
-    def test_thin_areas_publish_no_medians(self):
-        quiet = area_trends.area_series(self.rows, self.areas, self.months, "2026-06")["areas"]["Quiet|"]
-        self.assertTrue(quiet["kpi"]["thin"])
-        self.assertTrue(all(v is None for v in quiet["median"]))   # 3 sales per 3 months is under ROLL_MIN
+    def test_thin_areas_are_published_and_flagged_not_withheld(self):
+        out = area_trends.area_series(self.rows, self.areas, self.months, "2026-06")
+        quiet = out["areas"]["Quiet|"]
+        self.assertEqual(quiet["kpi"]["median12"], 150000)
+        self.assertTrue(quiet["kpi"]["few"]["median"])            # 12 sales in 12 months
+        self.assertEqual(quiet["kpi"]["medianYoY"], 0.0)
+        self.assertTrue(quiet["kpi"]["few"]["medianYoY"])
+        self.assertTrue(all(v == 150000 for v in quiet["median"]))
+        self.assertEqual(quiet["medianN"][-1], 3)                  # under fewBelow: the chart flags this point
+        self.assertLess(quiet["medianN"][-1], out["fewBelow"])
 
     def test_sold_summary_uses_complete_months_and_flags_pace(self):
         rows = list(self.rows)

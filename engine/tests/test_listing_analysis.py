@@ -8,7 +8,7 @@ import unittest
 import unittest.mock
 from collections import Counter
 from contextlib import redirect_stdout
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from engine import listing_analysis as la
@@ -43,7 +43,7 @@ class FakeBackend:
     def __init__(self, outputs):
         self.outputs, self.prompts, self.seen_files, self.dirs = list(outputs), [], [], []
 
-    def tag(self, prompt, workdir):
+    def tag(self, prompt, workdir, files=None):
         self.prompts.append(prompt)
         self.dirs.append(workdir)
         self.seen_files.append(sorted(os.listdir(workdir)))
@@ -237,8 +237,9 @@ class CityRunTests(unittest.TestCase):
             self.assertEqual(tagged["condition"], "dated")
             self.assertEqual(tagged["defects"][0]["photo"], 0)
             # next run: cached listing is skipped, the remaining one is tried
+            # the usage limit started a cool-down (5 hours without a reset time); a run after it resumes
             backend2 = FakeBackend([ok(good_tags(1, condition={"value": "updated", "confidence": 0.7}, defects=[]))])
-            doc, report = la.analyse_city(root, "philadelphia", backend=backend2, loader=loader, now=self.now, log=lambda *_: None)
+            doc, report = la.analyse_city(root, "philadelphia", backend=backend2, loader=loader, now=self.now + timedelta(hours=6), log=lambda *_: None)
             self.assertEqual(len(backend2.prompts), 1)
             self.assertEqual(doc["summary"]["photoTagged"], 2)
             # changing the description invalidates only that listing's cache entry
@@ -246,7 +247,7 @@ class CityRunTests(unittest.TestCase):
             rows[0]["description"] = "Sold as-is. Price reduced."
             write_city(root, "philadelphia", rows)
             backend3 = FakeBackend([ok(good_tags(1))])
-            la.analyse_city(root, "philadelphia", backend=backend3, loader=loader, now=self.now, log=lambda *_: None)
+            la.analyse_city(root, "philadelphia", backend=backend3, loader=loader, now=self.now + timedelta(hours=6), log=lambda *_: None)
             self.assertEqual(len(backend3.prompts), 1)
             self.assertIn("Price reduced", backend3.prompts[0])
 
@@ -864,6 +865,236 @@ class ExclusionAndHistoryTests(unittest.TestCase):
                     la.main(["--city", "philadelphia", "--no-photos", "--output", tmp])
                     la.main(["--city", "philadelphia", "--no-photos", "--no-tag-history", "--output", tmp])
         self.assertEqual([a["history"] for a in args], [True, False])
+
+
+NOW = datetime(2026, 11, 24, 12, tzinfo=timezone.utc)
+
+
+def entry(hours_ago, usd=0.0, backend="claude", **extra):
+    return {"at": (NOW - timedelta(hours=hours_ago)).isoformat(), "backend": backend, "calls": 1, "usd": usd,
+            "input": 1000, "output": 100, **extra}
+
+
+class LedgerAndModeTests(unittest.TestCase):
+    def test_windows_and_pruning(self):
+        entries = [entry(1, 0.1), entry(4.9, 0.2), entry(6, 0.3), entry(24 * 6, 0.4), entry(24 * 9, 9), entry(2, 5, "codex")]
+        self.assertEqual(la.ledger_window(entries, NOW, 5)["usd"], 0.3)
+        self.assertEqual(la.ledger_window(entries, NOW, 24 * 7)["usd"], 1.0)
+        self.assertEqual(la.ledger_window(entries, NOW, 5, "codex")["usd"], 5)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp, "ledger.jsonl")
+            for e in entries:
+                la.ledger_append(path, e, NOW)
+            self.assertEqual(len(la.ledger_read(path, NOW)), 5)        # the 9-day-old entry is dropped
+
+    def test_mode_switching_on_estimate(self):
+        self.assertEqual(la.decide_mode([], NOW)[0], "normal")
+        self.assertEqual(la.decide_mode([entry(1, 0.55)], NOW, budget_5h=1.0)[0], "normal")
+        mode, why = la.decide_mode([entry(1, 0.61)], NOW, budget_5h=1.0)
+        self.assertEqual(mode, "slow")
+        self.assertIn("estimate of this tagger's own usage", why)
+        week = [entry(24 * d, 1.0) for d in range(1, 6)]                    # $5 of $10 over the week
+        self.assertEqual(la.decide_mode(week, NOW, budget_7d=10.0)[0], "slow")
+        self.assertEqual(la.decide_mode([entry(1, 0.9, "codex")], NOW, budget_5h=1.0)[0], "normal")  # Claude budget only
+
+    def test_reported_plan_usage_wins(self):
+        low = entry(1, 0.9, rateLimits={"five_hour": {"utilization": 0.3}, "seven_day": {"utilization": 0.2}})
+        self.assertEqual(la.decide_mode([low], NOW, budget_5h=1.0)[0], "normal")   # real numbers override the estimate
+        high = entry(1, 0.0, rateLimits={"five_hour": {"utilization": 0.65}})
+        mode, why = la.decide_mode([high], NOW)
+        self.assertEqual(mode, "slow")
+        self.assertIn("reported by the CLI", why)
+        week = entry(1, 0.0, rateLimits={"seven_day": {"used_percentage": 51}})
+        self.assertEqual(la.decide_mode([week], NOW)[0], "slow")
+
+    def test_cool_down(self):
+        hit = entry(2, limitHit=True, resetsAt=None)
+        self.assertEqual(la.decide_mode([hit], NOW)[0], "stop")
+        self.assertEqual(la.decide_mode([entry(6, limitHit=True)], NOW)[0], "normal")
+        reset = int((NOW + timedelta(hours=1)).timestamp())
+        self.assertEqual(la.decide_mode([entry(9, limitHit=True, resetsAt=reset)], NOW)[0], "stop")
+        self.assertEqual(la.decide_mode([entry(2, limitHit=True), entry(1, 0.0)], NOW)[0], "stop")
+        self.assertEqual(la.decide_mode([entry(2, backend="codex", limitHit=True)], NOW)[0], "normal")
+
+    def test_slow_ranking(self):
+        far = {"estimate": {"vsPct": -40}}
+        near = {"estimate": {"vsPct": -12}}
+        above = {"estimate": {"vsPct": 15}}
+        self.assertLess(la.slow_mode_priority({}, far)[0], la.slow_mode_priority({}, near)[0])
+        self.assertIsNone(la.slow_mode_priority({"description": "Sold as-is"}, above))   # an estimate decides
+        no_est = la.slow_mode_priority({"description": "Sold as-is, needs TLC"}, {})
+        self.assertEqual(no_est[0][0], 1)
+        self.assertLess(la.slow_mode_priority({}, near)[0], no_est[0])
+        self.assertIsNone(la.slow_mode_priority({"description": "Lovely home"}, None))
+
+    def test_slow_mode_run(self):
+        rows = PriorityTests().rows()
+        cards = {"https://a.test/new": {"estimate": {"vsPct": -30}}, "https://a.test/old": {"estimate": {"vsPct": -50}},
+                 "https://a.test/cheap": {"estimate": {"vsPct": 5}}}
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_city(root, "philadelphia", rows)
+            la.ledger_append(root / "analysis" / "usage-ledger.jsonl", entry(1, 0.8), NOW)
+            doc, report = la.analyse_city(root, "philadelphia", dry_run=True, cards=cards, slow_limit=2, now=NOW,
+                                          budget_5h=1.0, log=lambda *_: None)
+            self.assertEqual(report["mode"], "slow")
+            self.assertEqual([p["url"][-3:] for p in report["planned"]], ["old", "new"])
+            self.assertEqual(report["stopped"], "run cap reached")
+            la.ledger_append(root / "analysis" / "usage-ledger.jsonl", entry(0.5, limitHit=True), NOW)
+            doc, report = la.analyse_city(root, "philadelphia", backend=FakeBackend([]), now=NOW, log=lambda *_: None)
+            self.assertEqual((report["mode"], report["planned"]), ("stop", []))
+
+
+class BackendTests(unittest.TestCase):
+    def test_assignment_is_stable(self):
+        urls = [f"https://a.test/{i}" for i in range(2000)]
+        first = [la.assign_backend(u, 0.2) for u in urls]
+        self.assertEqual(first, [la.assign_backend(u, 0.2) for u in urls])
+        self.assertAlmostEqual(first.count("codex") / len(urls), 0.2, delta=0.03)
+        self.assertEqual({la.assign_backend(u, 0) for u in urls}, {"claude"})
+        # raising the share only moves listings from Claude to Codex
+        self.assertTrue(all(b == "codex" for a, b in zip(first, [la.assign_backend(u, 0.3) for u in urls]) if a == "codex"))
+
+    def test_stream_json_and_rate_limits(self):
+        lines = [{"type": "system", "subtype": "init"},
+                 {"type": "rate_limit_event", "rate_limit_info": {"status": "allowed_warning", "utilization": 0.7,
+                                                                  "rate_limit_type": "five_hour"}},
+                 dict(ok(good_tags()), type="result")]
+        run = lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0, stdout="\n".join(map(json.dumps, lines)), stderr="")
+        cli = la.ClaudeCLI(run=run, binary="python3")
+        self.assertIn("--verbose", cli.command())
+        self.assertEqual(cli.command()[cli.command().index("--output-format") + 1], "stream-json")
+        out = cli.tag("x", tempfile.gettempdir())
+        self.assertEqual(out["rate_limits"][0]["utilization"], 0.7)
+        self.assertIn("structured_output", out)
+        rejected = [{"type": "rate_limit_event", "rate_limit_info": {"status": "rejected", "resetsAt": 1764000000}},
+                    {"type": "result", "is_error": True, "result": "You've hit your session limit · resets 3:45pm"}]
+        run2 = lambda cmd, **kw: subprocess.CompletedProcess(cmd, 1, stdout="\n".join(map(json.dumps, rejected)), stderr="")
+        with self.assertRaises(la.UsageLimit) as ctx:
+            la.ClaudeCLI(run=run2, binary="python3").tag("x", ".")
+        self.assertEqual(ctx.exception.resets_at, 1764000000)
+        self.assertNotIn("--verbose", la.ClaudeCLI(output="json").command())
+
+    def test_codex_command_and_parsing(self):
+        seen = {}
+
+        def run(cmd, **kw):
+            seen["cmd"], seen["input"] = cmd, kw["input"]
+            Path(cmd[cmd.index("-o") + 1]).write_text(json.dumps(good_tags(2)))
+            schema = json.loads(Path(cmd[cmd.index("--output-schema") + 1]).read_text())
+            seen["schema"] = schema
+            events = [{"type": "thread.started"},
+                      {"type": "turn.completed", "usage": {"input_tokens": 900, "cached_input_tokens": 100, "output_tokens": 50}}]
+            return subprocess.CompletedProcess(cmd, 0, stdout="\n".join(map(json.dumps, events)), stderr="")
+        with tempfile.TemporaryDirectory() as tmp:
+            for name in ("photo-0.jpg", "photo-1.jpg"):
+                Path(tmp, name).write_bytes(JPEG)
+            cli = la.CodexCLI(model="gpt-test", binary="python3", run=run)
+            out = cli.tag("Listing photos ...", tmp, ["photo-0.jpg", "photo-1.jpg"])
+        cmd = seen["cmd"]
+        for flag in ("exec", "--json", "--ephemeral", "--ignore-user-config", "--skip-git-repo-check"):
+            self.assertIn(flag, cmd)
+        self.assertEqual(cmd[cmd.index("--sandbox") + 1], "read-only")
+        self.assertEqual(cmd[cmd.index("-m") + 1], "gpt-test")
+        self.assertEqual([c.rsplit("/", 1)[1] for c in cmd if c.startswith("--image=")], ["photo-0.jpg", "photo-1.jpg"])
+        self.assertEqual(cmd[-1], "-")
+        self.assertEqual(seen["schema"], la.SCHEMA)
+        self.assertIn("untrusted", seen["input"].lower())
+        self.assertNotIn("with the Read tool", seen["input"])
+        self.assertEqual(out["usage"]["input_tokens"], 900)
+        self.assertEqual(out["structured_output"]["condition"]["value"], "dated")
+
+        def limited(cmd, **kw):
+            return subprocess.CompletedProcess(cmd, 1, stdout=json.dumps({"type": "error", "message": "You've hit your usage limit"}),
+                                               stderr="")
+        with tempfile.TemporaryDirectory() as tmp, self.assertRaises(la.UsageLimit):
+            la.CodexCLI(binary="python3", run=limited).tag("x", tmp, [])
+
+    def test_codex_auth_file_and_expired_login(self):
+        cmd = la.CodexCLI(binary="codex").command("/w", [], "/s.json", "/o.json")
+        self.assertNotIn('cli_auth_credentials_store="file"', cmd)
+        with unittest.mock.patch.dict(os.environ, {"REALIST_CODEX_AUTH_FILE": "1"}):
+            cmd = la.CodexCLI(binary="codex").command("/w", [], "/s.json", "/o.json")
+        self.assertEqual(cmd[cmd.index("-c") + 1], 'cli_auth_credentials_store="file"')
+
+        def expired(cmd, **kw):
+            event = {"type": "error", "message": "401 Unauthorized: your refresh token has expired; please log in again"}
+            return subprocess.CompletedProcess(cmd, 1, stdout=json.dumps(event), stderr="")
+        with tempfile.TemporaryDirectory() as tmp, self.assertRaises(la.BackendUnavailable):
+            la.CodexCLI(binary="python3", run=expired).tag("x", tmp, [])
+        rows = [dict(r, url=f"https://a.test/q{i}", address=f"{20 + i} Pine St Philadelphia, PA 19123")
+                for i, r in enumerate(PriorityTests().rows() * 3)]
+        codex = FakeBackend([la.BackendUnavailable("401 refresh token expired")])
+        codex.name, codex.model = "codex", "gpt-test"
+        claude = FakeBackend([ok(good_tags(4)) for _ in rows])
+        with tempfile.TemporaryDirectory() as tmp, unittest.mock.patch.dict(os.environ, {"GITHUB_ACTIONS": "true"}):
+            root = Path(tmp)
+            write_city(root, "philadelphia", rows)
+            out = io.StringIO()
+            with redirect_stdout(out):
+                doc, report = la.analyse_city(root, "philadelphia", backend=claude, codex=codex, codex_share=0.3,
+                                              loader=lambda u: (JPEG, "jpg"), cropper=None, now=NOW, log=lambda *_: None)
+            self.assertIn("::notice::Codex login expired — reseed CODEX_AUTH_JSON", out.getvalue())
+            self.assertEqual(len(codex.prompts), 1)
+            self.assertEqual(report["byBackend"]["codex"], 0)
+            self.assertEqual(report["tagged"], len(rows) - 1)        # the rest ran on Claude
+
+    def test_codex_share_in_run_and_fallback(self):
+        rows = [dict(r, url=f"https://a.test/p{i}") for i, r in enumerate(PriorityTests().rows() * 3)]
+        rows = [dict(r, address=f"{10 + i} Pine St Philadelphia, PA 19123") for i, r in enumerate(rows)]
+        to_codex = [r["url"] for r in rows if la.assign_backend(r["url"], 0.3) == "codex"]
+        self.assertTrue(to_codex)
+        codex = FakeBackend([ok(good_tags(4))] + [la.UsageLimit("codex usage limit")])
+        codex.name, codex.model = "codex", "gpt-test"
+        claude = FakeBackend([ok(good_tags(4)) for _ in rows])
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_city(root, "philadelphia", rows)
+            doc, report = la.analyse_city(root, "philadelphia", backend=claude, codex=codex, codex_share=0.3,
+                                          loader=lambda u: (JPEG, "jpg"), cropper=None, now=NOW, log=lambda *_: None)
+            store = json.loads((root / "analysis" / "philadelphia.json").read_text())["results"]
+            by_backend = Counter(r["backend"] for r in store.values())
+            self.assertEqual(by_backend["codex"], 1)                 # then Codex hit its limit
+            self.assertEqual(len(store), len(rows) - 1)              # the limited listing waits for the next run
+            first_codex = next(r for r in store.values() if r["backend"] == "codex")
+            self.assertEqual((first_codex["model"], first_codex["promptVersion"]), ("gpt-test", la.PROMPT_VERSION))
+            self.assertTrue(all(r["backend"] == "claude" and r["model"] == la.DEFAULT_MODEL
+                                for r in store.values() if r is not first_codex))
+            ledger = la.ledger_read(root / "analysis" / "usage-ledger.jsonl", NOW)
+            self.assertTrue(any(e["backend"] == "codex" and e.get("limitHit") for e in ledger))
+            self.assertEqual(report["mode"], "normal")
+
+    def test_compare_storage_and_report(self):
+        rows = PriorityTests().rows()[:2]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_city(root, "philadelphia", rows)
+            la.analyse_city(root, "philadelphia", backend=FakeBackend([ok(good_tags(4)), ok(good_tags(4))]),
+                            loader=lambda u: (JPEG, "jpg"), cropper=None, now=NOW, log=lambda *_: None)
+            other = good_tags(4, condition={"value": "needs_repair", "confidence": 0.7},
+                              defects=[defect("visible_mould", 1, 0.8, None)])
+            codex = FakeBackend([ok(other), ok(good_tags(4))])
+            codex.name, codex.model = "codex", "gpt-test"
+            pairs = la.run_compare(root, "philadelphia", {"claude": FakeBackend([]), "codex": codex}, 5,
+                                   loader=lambda u: (JPEG, "jpg"), now=NOW, log=lambda *_: None)
+            self.assertEqual(len(pairs), 2)
+            one = next(iter(pairs.values()))
+            self.assertEqual(set(one["results"]), {"claude", "codex"})
+            self.assertNotIn("crop", json.dumps(one))
+            published = json.loads((root / "philadelphia" / "listing-tags.json").read_text())
+            self.assertNotIn("gpt-test", json.dumps(published))      # comparisons never reach the site
+            rep = la.compare_report(root / "analysis", "philadelphia")
+            self.assertEqual((rep["pairs"], rep["conditionMatch"]), (2, 1))
+            self.assertEqual(rep["onlyIn"]["codex"]["visible_mould"], 1)
+            self.assertEqual(rep["onlyIn"]["claude"]["water_stain_ceiling"], 1)
+            text = la.format_compare_report(rep, "philadelphia")
+            self.assertIn("condition agrees on 1 of 2 (50%)", text)
+            # a second compare run does not repeat finished pairs
+            again = FakeBackend([])
+            again.name, again.model = "codex", "gpt-test"
+            la.run_compare(root, "philadelphia", {"claude": FakeBackend([]), "codex": again}, 5,
+                           loader=lambda u: (JPEG, "jpg"), now=NOW, log=lambda *_: None)
+            self.assertEqual(again.prompts, [])
 
 
 class CLITests(unittest.TestCase):

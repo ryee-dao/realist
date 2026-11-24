@@ -8,6 +8,7 @@ export interface ListingPin {
   label: string      // short asking price, e.g. "$189K"
   age: 0 | 1 | 2     // 0 under 30 days, 1 30–90 days, 2 over 90 days
   tip: string
+  dim?: boolean      // not on the current page of cards: a small faded dot
 }
 
 interface Props {
@@ -31,19 +32,22 @@ export default function ListingsMap({ center, zoom, pins, active, focus, onHover
   const layer = useRef<L.LayerGroup | null>(null)
   const markers = useRef(new Map<string, L.Marker>())
   const fitted = useRef(false)
-  // Where labels would overlap, later pins (pins come newest first) shrink to a dot of the same style; hover shows the price.
+  // Pins of the current page keep their price label unless it would overlap one placed before it (they come first);
+  // the rest shrink to a dot of the same age style, and hover shows the price. The active pin always sits on top.
   const declutter = useRef(() => {
     const m = map.current
     if (!m) return
     const placed: { x: number; y: number; w: number }[] = []
     markers.current.forEach((mk) => {
-      const el = mk.getElement()?.firstElementChild as HTMLElement | null
-      if (!el) return
+      const wrap = mk.getElement()
+      const el = wrap?.firstElementChild as HTMLElement | null
+      if (!wrap || !el) return
+      const off = el.classList.contains('off')
       const pt = m.latLngToLayerPoint(mk.getLatLng())
       const w = (el.textContent?.length ?? 4) * 7 + 12
-      const clash = placed.some((q) => Math.abs(q.x - pt.x) < (q.w + w) / 2 && Math.abs(q.y - pt.y) < 17)
+      const clash = off || placed.some((q) => Math.abs(q.x - pt.x) < (q.w + w) / 2 && Math.abs(q.y - pt.y) < 17)
       el.classList.toggle('dot', clash)
-      if (!mk.getElement()?.classList.contains('on')) mk.setZIndexOffset(clash ? -1000 : 0)
+      mk.setZIndexOffset(wrap.classList.contains('on') ? 3000 : off ? -2000 : clash ? -1000 : 0)
       if (!clash) placed.push({ x: pt.x, y: pt.y, w })
     })
   })
@@ -67,7 +71,7 @@ export default function ListingsMap({ center, zoom, pins, active, focus, onHover
     group.clearLayers()
     markers.current.clear()
     for (const p of pins) {
-      const icon = L.divIcon({ className: 'lc-pin-wrap', iconSize: [0, 0], html: `<span class="lc-pin a${p.age}">${p.label}</span>` })
+      const icon = L.divIcon({ className: 'lc-pin-wrap', iconSize: [0, 0], html: `<span class="lc-pin a${p.age}${p.dim ? ' off' : ''}">${p.label}</span>` })
       const mk = L.marker([p.lat, p.lon], { icon, keyboard: false, riseOnHover: true, title: p.tip })
         .on('mouseover', () => cb.current.onHover(p.id))
         .on('mouseout', () => cb.current.onHover(null))
@@ -83,11 +87,8 @@ export default function ListingsMap({ center, zoom, pins, active, focus, onHover
   }, [pins])
 
   useEffect(() => {
-    markers.current.forEach((mk, id) => {
-      const on = id === active
-      mk.getElement()?.classList.toggle('on', on)
-      mk.setZIndexOffset(on ? 1000 : 0)
-    })
+    markers.current.forEach((mk, id) => mk.getElement()?.classList.toggle('on', id === active))
+    declutter.current()
   }, [active, pins])
 
   useEffect(() => {

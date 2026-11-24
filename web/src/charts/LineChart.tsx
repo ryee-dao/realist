@@ -8,6 +8,8 @@ export interface LineSeries {
   values: (number | null)[]
   /** Optional shaded range around the line (e.g. the middle 50% of sales). */
   band?: { lo: (number | null)[]; hi: (number | null)[]; label: string }
+  /** Optional: points resting on few sales. Drawn as hollow warning-coloured rings, with a "few sales" legend item. */
+  few?: boolean[]
 }
 
 interface Props {
@@ -27,6 +29,7 @@ export default function LineChart({ labels, ticks, series, format, axisFormat = 
   const n = labels.length
   const direct = series.length > 1 && series.length <= 4
   const right = direct ? 108 : M.right
+  const anyFew = series.some((s) => s.few?.some((f, i) => f && s.values[i] != null))
   const w = Math.max(10, width - M.left - right)
   const h = height - M.top - M.bottom
 
@@ -60,11 +63,14 @@ export default function LineChart({ labels, ticks, series, format, axisFormat = 
 
   return (
     <div className="chart" ref={ref} style={{ minHeight: height }}>
-      {series.length > 1 && (
+      {(series.length > 1 || anyFew) && (
         <div className="legend">
-          {series.map((s) => (
+          {series.length > 1 && series.map((s) => (
             <span key={s.name}><i className="key-line" style={{ background: s.color }} />{s.name}</span>
           ))}
+          {anyFew && (
+            <span><svg width="12" height="12" aria-hidden="true" style={{ marginRight: 6, verticalAlign: '-1px' }}><circle cx="6" cy="6" r="4" fill="var(--surface)" stroke="var(--warn)" strokeWidth="2" /></svg>few sales</span>
+          )}
         </div>
       )}
       {width > 0 && all.length > 0 && (
@@ -84,9 +90,12 @@ export default function LineChart({ labels, ticks, series, format, axisFormat = 
           {series.map((s) => (
             <path key={s.name} d={linePath(pts(s.values))} fill="none" stroke={s.color} strokeWidth={2} strokeLinejoin="round" strokeLinecap="round" />
           ))}
+          {series.map((s) => s.few && s.values.map((v, i) => v != null && s.few![i] && (
+            <circle key={`${s.name}few${i}`} cx={x(i)} cy={y(v)} r={3.5} fill="var(--surface)" stroke="var(--warn)" strokeWidth={1.8} />
+          )))}
           {ends.map(({ s, i, y: ey }) => (
             <g key={s.name}>
-              <circle cx={x(i)} cy={ey} r={4} fill={s.color} stroke="var(--surface)" strokeWidth={2} />
+              <circle cx={x(i)} cy={ey} r={4} fill={s.few?.[i] ? 'var(--surface)' : s.color} stroke={s.few?.[i] ? 'var(--warn)' : 'var(--surface)'} strokeWidth={2} />
               {labelsFit && <text className="end-label" x={x(i) + 9} y={ey} dy="0.32em">{s.name}</text>}
             </g>
           ))}
@@ -107,6 +116,11 @@ export default function LineChart({ labels, ticks, series, format, axisFormat = 
             <div key={s.name} className="tooltip-row">
               <span><i className="key-line" style={{ background: s.color }} />{s.name}</span>
               <b>{s.values[hover] == null ? 'too few sales' : format(s.values[hover] as number)}</b>
+            </div>
+          ))}
+          {series.map((s) => s.few?.[hover] && s.values[hover] != null && (
+            <div key={s.name + 'few'} className="tooltip-row" style={{ color: 'var(--warn-ink)' }}>
+              <span>Few sales: may be inaccurate</span>
             </div>
           ))}
           {series.map((s) => s.band && s.band.lo[hover] != null && (

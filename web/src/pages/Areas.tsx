@@ -175,7 +175,7 @@ export default function AreasPage({ city, theme }: { city: City; theme: Theme })
         </div>
       </div>
 
-      <section className="card">
+      <section className="card a-table-card">
         <header className="card-head">
           <div><h3>All areas</h3><p>Last 12 months. Areas with fewer than 12 sales are left out. Incidents are police-reported, per 1,000 residents. Tier blends growth, yield, sales and incidents evenly; <a href={`#/${city.id}/find`}>Find areas</a> lets you weight them.</p></div>
           <label className="field"><span>Find an area</span><input id="area-search" type="search" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Name or ZIP" /></label>
@@ -188,20 +188,20 @@ export default function AreasPage({ city, theme }: { city: City; theme: Theme })
                 <button className="sort" onClick={() => onSort('tier')}>Tier<span className="sort-mark">{sort.key === 'tier' ? (sort.dir === 1 ? '↑' : '↓') : ''}</span></button>
               </th>
               <SortHead id="median12" label="Median price" sort={sort} onSort={onSort} num />
-              <SortHead id="medianYoY" label="1-yr change" sort={sort} onSort={onSort} num />
-              <SortHead id="change5y" label="5-yr change" sort={sort} onSort={onSort} num />
-              <SortHead id="ppsf12" label="Per sq ft" sort={sort} onSort={onSort} num />
+              <SortHead id="medianYoY" label="1-yr growth" sort={sort} onSort={onSort} num />
+              <SortHead id="change5y" label="5-yr growth" sort={sort} onSort={onSort} num />
+              <SortHead id="ppsf12" label="$/sq ft" sort={sort} onSort={onSort} num />
               <SortHead id="sales12" label="Homes sold" sort={sort} onSort={onSort} num />
               <SortHead id="rent" label="Rent / mo" sort={sort} onSort={onSort} num />
-              <SortHead id="yield" label="Gross yield" sort={sort} onSort={onSort} num />
+              <SortHead id="yield" label="Rent yield" sort={sort} onSort={onSort} num />
               <SortHead id="violentRate" label="Violent / 1k" sort={sort} onSort={onSort} num />
               <SortHead id="propertyRate" label="Property / 1k" sort={sort} onSort={onSort} num />
-              <th>Quarterly trend</th>
+              <th>Trend</th>
             </tr></thead>
             <tbody>
               {rows.map((a) => (
                 <tr key={a.key} className={`click ${a.key === sel?.key ? 'sel' : ''}`} onClick={() => setPicked(a.key)}>
-                  <td><b>{a.name}</b>{a.group && <span className="muted"> {a.group}</span>}{(a.zips ?? []).length > 0 && <span className="muted"> {(a.zips ?? []).join(', ')}</span>}</td>
+                  <td><b>{a.name}</b>{a.group && <span className="muted"> {a.group}</span>}{(a.zips ?? []).length > 0 && <span className="muted a-zip">{(a.zips ?? []).join(', ')}</span>}</td>
                   <td className="a-tier-col"><TierMark ramp={ramp} tier={standing.get(a.key)?.tier ?? null} /></td>
                   <td className="num">{usd(a.median12)}</td>
                   <td className="num" title={growthTip(a)}>{pct(growth1(a))}{G(a, 'medianYoY')}</td>
@@ -246,7 +246,7 @@ function trendWord(t: { crimeTrend?: string | null; crimeYoY: number | null }): 
   return `${t.crimeYoY > 0 ? 'up' : 'down'} ${Math.abs(t.crimeYoY).toFixed(0)}%`
 }
 
-const YIELD_NOTE = 'A year of typical rent divided by the median price. “After typical costs” assumes about half the rent goes on property tax, insurance, repairs, empty months and management. Mortgage costs are not included.'
+const YIELD_NOTE = 'Yield is a year of typical rent divided by the median price. “After typical costs” assumes about half the rent goes on property tax, insurance, repairs, empty months and management; mortgage costs are not included.'
 
 function top(areas: Area[], dir: 1 | -1): string {
   const ranked = areas.filter((a) => a.median12 != null).sort((a, b) => ((b.median12 as number) - (a.median12 as number)) * dir)
@@ -264,53 +264,115 @@ function TierMark({ tier, ramp }: { tier: Tier | null; ramp: Ramp }) {
   return <span className="f-tier" style={tierStyle(tier, ramp)} title={TIER_TIP}>{tier}</span>
 }
 
+/** A thin bullet bar: the area's value as a bar (from zero, or from the middle for changes) and a tick at the city figure. */
+function MiniBar({ v, c, lo, hi, tone }: { v: number | null; c: number | null; lo: number; hi: number; tone?: 'good' | 'bad' }) {
+  if (v == null) return <span className="a-bar" />
+  const pos = (x: number) => Math.max(0, Math.min(1, (x - lo) / (hi - lo || 1))) * 100
+  const base = lo < 0 ? pos(0) : 0
+  const p = pos(v)
+  return (
+    <span className={`a-bar ${tone ?? ''}`} aria-hidden="true">
+      {lo < 0 && <i className="a-bar-zero" style={{ left: `${base}%` }} />}
+      <i className="a-bar-fill" style={{ left: `${Math.min(base, p)}%`, width: `${Math.max(Math.abs(p - base), 2)}%` }} />
+      {c != null && <i className="a-bar-city" style={{ left: `${pos(c)}%` }} />}
+    </span>
+  )
+}
+
+interface DetailRow {
+  id: string; label: string; grade?: Graded; value: ReactNode
+  more?: string                                                    // exact figures, shown on hover and on tap
+  bar?: { v: number | null; c: number | null; lo: number; hi: number; tone?: 'good' | 'bad' }
+}
+
+/** Scale ends for each bar, from the spread across the city's areas, so one area's bars read the same way as another's. */
+function useDomains(areas: Area[]) {
+  return useMemo(() => {
+    const q95 = (f: (a: Area) => number | null | undefined, abs = false) => {
+      const v = areas.map(f).filter((x): x is number => x != null).map((x) => (abs ? Math.abs(x) : x)).sort((a, b) => a - b)
+      return v.length ? v[Math.floor(0.95 * (v.length - 1))] : 1
+    }
+    return {
+      price: q95((a) => a.median12), g1: q95(growth1, true), g5: q95(growth5, true), rent: q95((a) => a.rent), yield: q95((a) => a.yield),
+      violent: q95((a) => a.violentRate), property: q95((a) => a.propertyRate), crime: Math.max(20, q95((a) => a.crimeYoY, true)),
+    }
+  }, [areas])
+}
+
 function AreaDetail({ area, data, city, ramp, standing, onClose }: { area: Area; data: AreasData; city: City; ramp: Ramp; standing?: Standing; onClose: () => void }) {
-  const G = (id: Graded): ReactNode => <GradeMark ramp={ramp} p={standing?.pctl[id]} label={GRADED.find((g) => g.id === id)!.label} />
-  const [note, setNote] = useState(false)
-  const gap = area.median12 != null && city.kpi.median12 ? (area.median12 / city.kpi.median12 - 1) * 100 : null
+  const [open, setOpen] = useState<string | null>(null)
+  const dom = useDomains(data.areas)
   const cx = city.context
-  const vsCity = (v: string) => <span className="muted"> · city {v}</span>
-  const growth = (years: 1 | 5) => {
-    const v = years === 1 ? growth1(area) : growth5(area)
-    if (v == null) return 'too few sales'
-    const c = cityGrowthFor(area, data.cityGrowth, years)
-    return <span title={growthTip(area)}>{pct(v, years === 1 ? 1 : 0)}{c != null && vsCity(pct(c, years === 1 ? 1 : 0))}</span>
+  const level = (v: number | null | undefined, c: number | null | undefined, top: number) =>
+    ({ v: v ?? null, c: c ?? null, lo: 0, hi: Math.max(top, v ?? 0, c ?? 0) * 1.05 })
+  const change = (v: number | null | undefined, c: number | null | undefined, top: number, goodWhenUp: boolean) => {
+    const m = Math.max(top, Math.abs(v ?? 0), Math.abs(c ?? 0)) * 1.1
+    const tone: 'good' | 'bad' | undefined = v == null || v === 0 ? undefined : (v > 0) === goodWhenUp ? 'good' : 'bad'
+    return { v: v ?? null, c: c ?? null, lo: -m, hi: m, tone }
   }
+  const vs = (c: string | null) => (c == null ? '' : ` · city ${c}`)
+
+  const g1 = growth1(area), g5 = growth5(area)
+  const c1 = cityGrowthFor(area, data.cityGrowth, 1), c5 = cityGrowthFor(area, data.cityGrowth, 5)
+  const gap = area.median12 != null && city.kpi.median12 ? (area.median12 / city.kpi.median12 - 1) * 100 : null
+  const crimeV = area.crimeTrend === 'flat' ? 0 : area.crimeYoY
+  const crimeC = cx.crimeTrend === 'flat' ? 0 : cx.crimeYoY
+  const rows: DetailRow[] = [
+    { id: 'price', label: 'Median price', value: usd(area.median12), bar: level(area.median12, city.kpi.median12, dom.price),
+      more: `${usd(area.median12)}${vs(usd(city.kpi.median12))}${gap == null ? '' : Math.abs(gap) < 0.5 ? ' (about the same)' : ` (${Math.abs(gap).toFixed(0)}% ${gap > 0 ? 'above' : 'below'})`}` +
+        (area.medianLow != null && area.medianHigh != null ? `. Likely range ${usdCompact(area.medianLow)}–${usdCompact(area.medianHigh)}.` : '') },
+    { id: 'g1', label: 'Growth, 1 yr', grade: 'medianYoY', value: g1 == null ? 'too few sales' : pct(g1), bar: change(g1, c1, dom.g1, true),
+      more: g1 == null ? undefined : `${pct(g1)}${vs(c1 == null ? null : pct(c1))}. ${growthTip(area) ?? ''}` },
+    { id: 'g5', label: 'Growth, 5 yrs', grade: 'change5y', value: g5 == null ? 'too few sales' : pct(g5, 0), bar: change(g5, c5, dom.g5, true),
+      more: g5 == null ? undefined : `${pct(g5, 0)}${vs(c5 == null ? null : pct(c5, 0))}` },
+    { id: 'ppsf', label: 'Price / sq ft', value: area.ppsf12 == null ? 'not published' : usd(area.ppsf12) },
+    { id: 'sold', label: 'Homes sold', grade: 'sales12', value: num(area.sales12),
+      more: `${num(area.sales12)} in 12 months${area.salesYoY != null ? `, ${pct(area.salesYoY, 0)} on the year before` : ''}` },
+    { id: 'rent', label: 'Typical rent', value: area.rent == null ? 'no estimate' : `${usd(area.rent)}/mo`, bar: area.rent == null ? undefined : level(area.rent, cx.rent, dom.rent),
+      more: area.rent == null ? undefined : `${usd(area.rent)} a month${vs(cx.rent == null ? null : usd(cx.rent))}${area.rentYoY != null ? `. ${pct(area.rentYoY)} in a year.` : ''}` },
+    { id: 'yield', label: 'Rent yield', grade: 'yield', value: area.yield == null ? '–' : `${area.yield.toFixed(1)}%`, bar: area.yield == null ? undefined : level(area.yield, cx.yield, dom.yield),
+      more: area.yield == null ? undefined : `${area.yield.toFixed(1)}% before costs${area.netYield != null ? `, about ${area.netYield.toFixed(1)}% after typical costs` : ''}${vs(cx.yield == null ? null : `${cx.yield.toFixed(1)}%`)}. ${YIELD_NOTE}` },
+  ]
+  if (area.violentRate == null) rows.push({ id: 'inc', label: 'Incidents', value: 'too few residents' })
+  else rows.push(
+    { id: 'violent', label: 'Violent', grade: 'violentRate', value: area.violentRate.toFixed(1), bar: level(area.violentRate, cx.violentRate, dom.violent),
+      more: `${area.violentRate.toFixed(1)} per 1,000${vs(cx.violentRate?.toFixed(1) ?? null)}${area.violentRaw != null ? `. Unadjusted ${area.violentRaw.toFixed(1)}.` : ''}` },
+    { id: 'property', label: 'Property', grade: 'propertyRate', value: area.propertyRate?.toFixed(1) ?? '–', bar: level(area.propertyRate, cx.propertyRate, dom.property),
+      more: `${area.propertyRate?.toFixed(1)} per 1,000${vs(cx.propertyRate?.toFixed(1) ?? null)}${area.propertyRaw != null ? `. Unadjusted ${area.propertyRaw.toFixed(1)}.` : ''}` },
+    { id: 'crime', label: 'Incidents, 1 yr', value: trendWord(area), bar: change(crimeV, crimeC, dom.crime, false),
+      more: `${trendWord(area)}${vs(cx.crimeYoY != null || cx.crimeTrend === 'flat' ? trendWord(cx) : null)}` },
+  )
+
   return (
     <section className="card a-detail">
       <header className="card-head">
         <div><h3>{area.name}{area.group ? ` · ${area.group}` : ''}</h3>
-          <p>{area.topTypeShare}% of recent sales are {area.topType.toLowerCase()} homes.</p></div>
+          <p>{(area.zips ?? []).length > 0 && <>ZIP {(area.zips ?? []).join(', ')} · </>}{area.topTypeShare}% {area.topType.toLowerCase()} homes</p></div>
         <div className="a-tier-head"><TierMark tier={standing?.tier ?? null} ramp={ramp} /><button className="ghost small" onClick={onClose}>Close</button></div>
       </header>
-      <dl className="kv a-kv">
-        <dt>ZIP codes</dt><dd>{(area.zips ?? []).length ? (area.zips ?? []).join(', ') : '–'}</dd>
-        <dt>Median price</dt><dd title={area.medianLow != null && area.medianHigh != null ? `Likely range ${usdCompact(area.medianLow)}–${usdCompact(area.medianHigh)}` : undefined}>
-          {usd(area.median12)}{gap != null && <span className="muted"> · {Math.abs(gap) < 0.5 ? 'same as city' : `${Math.abs(gap).toFixed(0)}% ${gap > 0 ? 'above' : 'below'} city`}</span>}</dd>
-        <dt>Growth, 1 yr</dt><dd>{growth(1)}{G('medianYoY')}</dd>
-        <dt>Growth, 5 yrs</dt><dd>{growth(5)}{G('change5y')}</dd>
-        <dt>Price / sq ft</dt><dd>{area.ppsf12 == null ? 'not published' : usd(area.ppsf12)}</dd>
-        <dt>Homes sold</dt><dd>{num(area.sales12)}{area.salesYoY != null && <span className="muted"> · {pct(area.salesYoY, 0)} in a year</span>}{G('sales12')}</dd>
-        <dt>Typical rent</dt><dd>{area.rent == null ? 'no estimate' : <>{usd(area.rent)}/mo{area.rentYoY != null && <span className="muted"> · {pct(area.rentYoY)} in a year</span>}</>}</dd>
-        <dt>Rent yield</dt>
-        <dd>{area.yield == null ? '–' : <>
-          {area.yield.toFixed(1)}% before costs{G('yield')}
-          {area.netYield != null && <><br /><span className="muted">about {area.netYield.toFixed(1)}% after typical costs</span></>}
-          <button className="a-info" aria-expanded={note} aria-label="What costs?" title={YIELD_NOTE} onClick={() => setNote(!note)}>?</button>
-          {note && <span className="a-note">{YIELD_NOTE}</span>}
-        </>}</dd>
-        {area.violentRate == null ? <><dt>Incidents</dt><dd className="muted">too few residents for a rate</dd></> : <>
-          <dt>Violent</dt><dd title={area.violentRaw != null ? `Unadjusted: ${area.violentRaw.toFixed(1)}` : undefined}>{area.violentRate.toFixed(1)} per 1,000{cx.violentRate != null && vsCity(cx.violentRate.toFixed(1))}{G('violentRate')}</dd>
-          <dt>Property</dt><dd title={area.propertyRaw != null ? `Unadjusted: ${area.propertyRaw.toFixed(1)}` : undefined}>{area.propertyRate?.toFixed(1)} per 1,000{cx.propertyRate != null && vsCity(cx.propertyRate.toFixed(1))}{G('propertyRate')}</dd>
-          <dt>Incidents, 1 yr</dt><dd>{trendWord(area)}{(cx.crimeYoY != null || cx.crimeTrend === 'flat') && vsCity(trendWord(cx))}</dd>
-        </>}
-      </dl>
-      <p className="a-kv-note">Incidents are police reports per 1,000 residents.</p>
+      <div className="a-rows">
+        {rows.map((r) => {
+          const inner = <>
+            <span className="a-label">{r.label}{r.grade && <GradeMark ramp={ramp} p={standing?.pctl[r.grade]} label={GRADED.find((g) => g.id === r.grade)!.label} />}</span>
+            <span className="a-val">{r.value}</span>
+            {r.bar ? <MiniBar {...r.bar} /> : <span className="a-bar none" />}
+          </>
+          if (!r.more) return <div key={r.id} className="a-row">{inner}</div>
+          const on = open === r.id
+          return (
+            <div key={r.id} className="a-row-wrap">
+              <button className={`a-row ${on ? 'on' : ''}`} title={r.more} aria-expanded={on} onClick={() => setOpen(on ? null : r.id)}>{inner}</button>
+              {on && <p className="a-more">{r.more}</p>}
+            </div>
+          )
+        })}
+      </div>
+      <p className="a-kv-note">Incidents per 1,000 residents. Bar: this area; line: city. Tap a row for figures.</p>
       {area.listings && <ListingLine l={area.listings} />}
       <LineChart labels={data.quarters} series={[{ name: 'Median sale price', color: 'var(--series-1)', values: area.quarterly }]}
         ticks={() => data.quarters.map((q, index) => ({ index, label: q.slice(0, 4), first: q.endsWith('Q1') })).filter((t) => t.first)}
         format={usd} axisFormat={usdCompact} height={230} />
-      <p className="footnote" style={{ marginTop: 8 }}>Quarterly median; quarters with under five sales are blank. <a href={`#/${city.id}/sold`}>Sold prices</a></p>
+      <p className="footnote" style={{ marginTop: 8 }}>Quarterly median; quarters with under five sales are blank. <a href={`#/${city.id}/sales`}>Recent sales</a></p>
     </section>
   )
 }

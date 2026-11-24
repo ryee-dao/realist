@@ -26,6 +26,7 @@ Asking prices are only ever compared with recorded sales; they never enter the s
 Plus and minus items here do not depend on the page's area weights (the area tier is worked out in the browser).
 """
 import argparse
+import hashlib
 import json
 import math
 import os
@@ -156,19 +157,16 @@ def model_features(cfg, sale, record, today):
 
 
 def _driver_text(name, level, pct, features, predictor):
-    """A short line for one model driver: "Finished basement", "Floor area above typical (1,450 sq ft)"."""
+    """A few words for one model driver: "Bigger than typical", "Small lot", "Finished basement"."""
     up = pct > 0
     if name in ("Floor area", "Lot size"):
-        v = features.get(name)
-        typical = math.exp(predictor["log"][name]["centre"])
-        if v is None:
+        if features.get(name) is None:
             return f"{name} not recorded"
-        size = round(math.exp(v))
         if name == "Floor area":
-            return f"Floor area {'above' if up else 'below'} typical ({size:,} sq ft vs {round(typical, -1):,.0f})"
-        return f"Lot {'larger' if up else 'smaller'} than typical ({size:,} sq ft)"
+            return "Bigger than typical" if up else "Smaller than typical"
+        return "Big lot" if up else "Small lot"
     if level is None:
-        return f"{name}: not recorded"
+        return f"{name} not recorded"
     special = {
         ("Basement", "Full, finished"): "Finished basement", ("Basement", "Partial"): "Partial basement",
         ("Central air", "Yes"): "Central air", ("Central air", "No"): "No central air",
@@ -178,17 +176,17 @@ def _driver_text(name, level, pct, features, predictor):
     if (name, level) in special:
         return special[(name, level)]
     if name == "Garage":
-        return "No garage" if level == "None" else f"Garage ({level} {'space' if level == '1' else 'spaces'})"
+        return "No garage" if level == "None" else "Garage"
     if name in ("Interior condition", "Exterior condition"):
-        return f"{name.split()[0]} {level.lower()} (city record)"
+        return f"{name.split()[0]}: {level.lower()}"
     if name == "Quality grade":
-        return f"Quality grade {level} (city record)"
+        return f"Quality grade {level}"
     if name == "Age at sale":
-        return f"Built {level.replace('yrs', 'years').replace('Under', 'under')} ago"
+        return "Built " + level.replace(" yrs", "").replace("Under ", "<").replace("+", "+") + " yrs ago"
     if name == "Building form":
         return f"{level} home"
     if name in ("Bedrooms", "Bathrooms", "Stories"):
-        return f"{level} {name.lower()}" if level not in ("1",) else f"1 {name.lower()[:-1]}"
+        return f"{level} {name.lower()}" if level != "1" else f"1 {name.lower()[:-1]}"
     if name == "View":
         return f"{level} view"
     return f"{name}: {level}"
@@ -238,7 +236,7 @@ def model_estimate(predictor, features, area_key, area_name):
         parts.append({"label": f"{_plural(len(rest), 'other feature')}", "pct": pct(sum(math.log1p(p['pct'] / 100) for p in rest)),
                       "driver": "other"})
     hood = pct(area - predictor["areaMean"])
-    return {"value": value, "base": math.exp(base), "area": {"label": f"Neighbourhood: {area_name}", "pct": hood},
+    return {"value": value, "base": math.exp(base), "area": {"label": "Neighbourhood", "name": area_name, "pct": hood},
             "parts": parts}
 
 
@@ -257,7 +255,7 @@ def area_items(area, city_fig):
     plus, minus = [], []
     g, cg = _growth(area), city_fig.get("growth1")
     if g is not None and cg is not None and abs(g - cg) >= GROWTH_ITEM_PTS:
-        text = f"Sale prices here {'up' if g >= 0 else 'down'} {abs(g):.1f}% in a year (city {cg:+.1f}%)"
+        text = f"Prices here {f'{g:+.0f}%' if round(g) else 'flat'} in a year (city {cg:+.0f}%)"
         (plus if g > cg else minus).append({"text": text, "kind": "area",
                                             "why": "Recorded sales, 12 complete months, against the year before"})
     v, p = _num(area.get("violentRate")), _num(area.get("propertyRate"))
@@ -265,7 +263,7 @@ def area_items(area, city_fig):
     if idx is not None and cidx:
         ratio = idx / cidx - 1
         if abs(ratio) >= INCIDENT_ITEM_RATIO:
-            item = {"text": f"Reported incidents {'above' if ratio > 0 else 'below'} the city figure", "kind": "area",
+            item = {"text": f"{'More' if ratio > 0 else 'Fewer'} incidents than the city figure", "kind": "area",
                     "why": f"Police-reported incidents per 1,000 residents a year: violent {v:.1f}, property {p:.1f} "
                            f"(city {city_fig['violentRate']:.1f}, {city_fig['propertyRate']:.1f})"}
             (minus if ratio > 0 else plus).append(item)
@@ -353,6 +351,7 @@ def card_for(row, ctx):
     if area is None and tag and (tag.get("compare") or {}).get("area"):
         area, mapping = ctx["areas_by_name"].get(tag["compare"]["area"]), tag["compare"].get("mapping", "tags")
     plus, minus, notes = [], [], []
+    no_estimate = None
     last = None   # the home's latest recorded sale (never mixed with the asking price, only shown beside it)
     if sale:
         last = {"date": sale["date"], "price": _to_int(sale.get("price"))}
@@ -372,7 +371,7 @@ def card_for(row, ctx):
             if PPSF_PLAUSIBLE[0] <= ratio <= PPSF_PLAUSIBLE[1]:
                 sold["vsPpsfPct"] = round(100 * (ratio - 1), 1)
             else:
-                notes.append("Floor area looks inconsistent")
+                no_estimate = "Floor area on the listing looks wrong"
         if price and sold["median12"]:
             sold["vsMedianPct"] = round(100 * (price / sold["median12"] - 1), 1)
         card["sold"] = {k: v for k, v in sold.items() if v is not None}
@@ -381,7 +380,7 @@ def card_for(row, ctx):
         minus += m
         vs = sold.get("vsPpsfPct")
         if vs is not None and abs(vs) >= PPSF_ITEM_PCT:
-            item = {"text": f"Asking $/sq ft {abs(vs):.0f}% {'below' if vs < 0 else 'above'} recorded sales here",
+            item = {"text": f"$/sq ft {abs(vs):.0f}% {'under' if vs < 0 else 'over'} sold homes here",
                     "kind": "sold", "why": f"${price / sqft:,.0f} asking vs ${sold['ppsf12']:,.0f} median sold, 12 complete months"}
             (plus if vs < 0 else minus).append(item)
 
@@ -409,6 +408,12 @@ def card_for(row, ctx):
     if (estimate is None and area and card["sold"].get("vsMedianPct") is not None and home_type
             and home_type == area.get("topType")):
         estimate = {"kind": "median", "value": card["sold"]["median12"], "error": None}
+    if estimate is None or not price:
+        card["noEstimate"] = ("No asking price" if not price else no_estimate if no_estimate
+                              else "Not placed in an area" if not area
+                              else "No sold homes of this type nearby to compare" if home_type in NO_PPSF_TYPES
+                              else "No floor area listed" if not sqft
+                              else "No sold homes of this type nearby to compare")
     if estimate and price:
         e = estimate["error"]
         if e is not None and estimate["kind"] != "median":
@@ -419,12 +424,11 @@ def card_for(row, ctx):
 
     # description and photos
     if tag:
+        card["signals"] = sorted(tag.get("signals") or {})
         p, m, t = signal_items(tag.get("signals"))
         plus += p
         minus += m
         notes += t
-        if (tag.get("description") or {}).get("unusual"):
-            notes.append("Unusual description")
         photo, m = photo_summary(tag.get("photo")) if ctx["photoCity"] else (None, [])
         minus += m
         if photo:
@@ -432,7 +436,98 @@ def card_for(row, ctx):
     card["plus"], card["minus"] = plus, minus
     if notes:
         card["tags"] = notes
+    card["_detail"] = detail_for(card, row, tag, sale, ctx)
     return card
+
+
+# ---------------------------------------------------------------------------- the detail panel (one small file per home)
+
+COMPS = 4            # recent recorded sales shown beside a listing
+COMP_KM = 1.0        # nearest first, within this distance; otherwise the area's latest sales
+
+
+def detail_name(card_id):
+    """A file name for a home's detail file: stable, URL-safe, and free of the address characters in the id."""
+    return hashlib.sha1(card_id.encode("utf-8")).hexdigest()[:16]
+
+
+class SoldIndex:
+    """The recorded sales the site already publishes (<city>/sales.json, the latest months), for nearby comparisons."""
+
+    def __init__(self, sales_doc, areas):
+        cols = (sales_doc or {}).get("columns") or {}
+        types = (sales_doc or {}).get("typeNames") or []
+        col = lambda k, i: cols[k][i] if k in cols and i < len(cols[k]) else None
+        self.rows = []
+        for i, date in enumerate(cols.get("date") or []):
+            a, t = col("area", i), col("type", i)
+            if not col("price", i):
+                continue
+            self.rows.append({"date": date, "price": col("price", i), "address": col("address", i), "sqft": col("sqft", i),
+                              "type": types[t] if isinstance(t, int) and t < len(types) else None,
+                              "area": areas[a]["key"] if isinstance(a, int) and 0 <= a < len(areas) else None,
+                              "lat": col("lat", i), "lon": col("lon", i), "key": (normalize_address(col("address", i), "") or ())[:3]})
+
+    def near(self, lat, lon, area_key, home_type, address):
+        """Up to COMPS sales: the nearest within COMP_KM (same home type first), then the area's latest."""
+        own = (normalize_address(address, "") or ())[:3] if address else None
+        pool = [r for r in self.rows if not own or r["key"] != own]
+        picked = []
+        if lat is not None and lon is not None:
+            close = []
+            for r in pool:
+                if type(r["lat"]) is float and type(r["lon"]) is float and abs(r["lat"] - lat) < 0.02:
+                    km = math.hypot(r["lat"] - lat, (r["lon"] - lon) * math.cos(math.radians(lat))) * 111.2
+                    if km <= COMP_KM:
+                        close.append((r["type"] != home_type, km, r))
+            close.sort(key=lambda x: (x[0], x[1]))
+            picked = [dict(r, km=round(km, 2)) for _, km, r in close[:COMPS]]
+        if len(picked) < COMPS and area_key:
+            have = {(r["address"], r["date"]) for r in picked}
+            more = [r for r in pool if r["area"] == area_key and (r["address"], r["date"]) not in have
+                    and (r["type"] == home_type or not home_type)]
+            more.sort(key=lambda r: r["date"], reverse=True)
+            picked += more[:COMPS - len(picked)]
+        return [{k: r.get(k) for k in ("address", "price", "date", "sqft", "type", "km") if r.get(k) is not None} for r in picked]
+
+
+def detail_for(card, row, tag, sale, ctx):
+    """What only the detail panel needs: quoted description phrases, every finding with its crops, coverage and editing
+    notes, this address's record, and nearby recorded sales. Asking and sold figures stay in separate fields."""
+    out = {"id": card["id"]}
+    signals = (tag or {}).get("signals") or {}
+    if signals:
+        out["quotes"] = [{"signal": k, "label": SIGNAL_ITEMS.get(k, (0, k.replace("_", " ")))[1], "quote": q}
+                         for k, q in signals.items() if isinstance(q, str)]
+    photo = (tag or {}).get("photo") if ctx["photoCity"] else None
+    if photo:
+        out["photo"] = {
+            "findings": [{"type": f.get("type"), "label": DEFECTS.get(f.get("type"), str(f.get("type", "")).replace("_", " ").capitalize()),
+                          "room": str(f.get("room") or "").replace("_", " "), "rooms": f.get("rooms") or 1,
+                          "confidence": f.get("confidence"), "evidence": f.get("evidence"), "crops": f.get("crops") or []}
+                         for f in photo.get("findings") or []],
+            "missing": (photo.get("coverage") or {}).get("missing") or [],
+            "coverage": (photo.get("coverage") or {}).get("rating"),
+            "analysed": photo.get("photosAnalysed") or (photo.get("coverage") or {}).get("photosAnalysed"),
+            "labelled": [x.get("text") for x in (photo.get("editing") or {}).get("labelled") or [] if x.get("text")],
+            "possiblyEdited": bool((photo.get("editing") or {}).get("suspected") or (photo.get("editing") or {}).get("emptyAndFurnished")),
+            "condition": photo.get("condition"), "credit": photo.get("credit"), "creditUrl": photo.get("creditUrl"),
+        }
+    record = {}
+    if sale:
+        yb = _to_int(sale.get("year_built"))
+        if yb and 1700 <= yb <= int(ctx["today"][:4]) + 1:
+            record["yearBuilt"] = yb
+        assessed = _to_int(sale.get("assessed"))
+        if assessed and assessed >= 10_000:
+            record["assessed"] = assessed       # the city's assessed value on the stored record
+    if record:
+        out["record"] = record
+    comps = ctx["sold"].near(card.get("lat"), card.get("lon"), (card.get("area") or {}).get("key"),
+                             card["facts"].get("homeType"), card.get("address"))
+    if comps:
+        out["comps"] = comps
+    return out
 
 
 # ---------------------------------------------------------------------------- the city file
@@ -444,6 +539,10 @@ def _locator(store, city):
         return None
     from .geo import Locator
     return Locator(path, cfg["boundaries"]["name"])
+
+
+def sales_doc_overview(root, city):
+    return read_json(root / city / "overview.json")
 
 
 def city_figures(root, city):
@@ -474,6 +573,7 @@ def build(root, city, store=None, now=None, listings_root=None):
             if u:
                 tags.setdefault(u, t)
     predictor = read_json(root / city / "model-predictor.json")
+    sales_doc = read_json(root / city / "sales.json")
     parcels = None
     if store is not None and predictor:
         parcels = ParcelIndex(store, city)
@@ -481,7 +581,8 @@ def build(root, city, store=None, now=None, listings_root=None):
            "locator": _locator(store, city), "areas_by_key": {a["key"]: a for a in areas},
            "areas_by_name": {**{a["key"].partition("|")[0]: a for a in areas}, **{a["name"]: a for a in areas}},
            "label": lambda key: area_label(CITY_CFG.get(city) or {"area_by": "area"}, key)[0],
-           "index": AreaIndex(areas_doc, read_json(root / city / "overview.json"), read_json(root / city / "sales.json"), city),
+           "index": AreaIndex(areas_doc, sales_doc_overview(root, city), sales_doc, city),
+           "sold": SoldIndex(sales_doc, areas_doc.get("areas") or []),
            "cityFigures": city_figures(root, city), "photoCity": bool(tags_doc.get("photoTagging"))}
     rows = [r for r in listings["rows"] if isinstance(r, dict) and r.get("url")]
     seen = {u for r in rows for u in [r["url"]] + [s.get("url") for s in r.get("sources") or []]}
@@ -491,6 +592,11 @@ def build(root, city, store=None, now=None, listings_root=None):
             rows.append({"url": t["url"], "address": t.get("address"), "date": t.get("date"), "price": t.get("price"),
                          "source": t.get("source"), "inSnapshot": False})
     cards = [card_for(r, ctx) for r in rows]
+    details = {}
+    for c in cards:
+        name = detail_name(c["id"])
+        details[name] = c.pop("_detail")
+        c["detail"] = name
     cards.sort(key=lambda c: (c.get("date") or "", c.get("price") or 0), reverse=True)
     models = [c for c in cards if (c.get("estimate") or {}).get("kind") == "model"]
     return {
@@ -508,6 +614,7 @@ def build(root, city, store=None, now=None, listings_root=None):
                     "estimates": {k: sum(1 for c in cards if (c.get("estimate") or {}).get("kind") == k) for k in ("model", "ppsf", "median")},
                     "modelled": len(models), "withFindings": sum(1 for c in cards if (c.get("photo") or {}).get("findings"))},
         "cards": cards,
+        "_details": details,
     }
 
 
@@ -515,6 +622,15 @@ def publish(root, city, store=None, now=None, log=print, listings_root=None):
     doc = build(root, city, store, now, listings_root)
     if doc is None:
         return None
+    details = doc.pop("_details")
+    folder = Path(root) / city / "listing-detail"
+    for name, detail in details.items():
+        path = folder / f"{name}.json"
+        if read_json(path) != detail:          # unchanged files are left alone
+            write_json(path, detail)
+    for old in folder.glob("*.json") if folder.is_dir() else []:
+        if old.stem not in details:
+            old.unlink()
     write_json(Path(root) / city / "listing-cards.json", doc)
     s = doc["summary"]
     log(f"{city}: listing-cards.json, {s['cards']} homes ({s['withPin']} with a pin, {s['withArea']} in an area); "

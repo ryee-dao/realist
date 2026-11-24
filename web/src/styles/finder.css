@@ -138,3 +138,4 @@
   .f-ts .mini { display: none; }
   .finder > .footnote { margin-top: 0; }
 }
+.f-key-out { background: color-mix(in srgb, var(--text-2) 35%, transparent); border: 1px dashed var(--line-strong); }

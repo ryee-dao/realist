@@ -1,18 +1,42 @@
 /* Areas page only. Tokens only. */
 .a-map-card .card-head .segmented { flex: 0 1 auto; max-width: 100%; }
-.a-kv { margin-bottom: 6px; }
-.a-kv dd { overflow-wrap: anywhere; }
-.a-kv-note { margin: 0 0 10px; font-size: 11.5px; color: var(--muted); }
-.a-info {
-  display: inline-grid; place-items: center; width: 16px; height: 16px; margin-left: 6px; padding: 0; vertical-align: middle;
-  border: 1px solid var(--line-strong); border-radius: 50%; background: none; color: var(--text-2);
-  font: 600 10px/1 var(--font); cursor: help;
+
+/* ---- detail panel: label + grade | value | bullet bar; tap or hover a row for the exact figures ---- */
+.a-rows { display: grid; margin: 0 0 6px; border-top: 1px solid var(--line); }
+.a-row-wrap { border-bottom: 1px solid var(--line); }
+.a-rows > .a-row { border-bottom: 1px solid var(--line); }
+.a-row {
+  display: grid; grid-template-columns: minmax(0, 9.5rem) 6.5rem minmax(48px, 1fr); align-items: center; gap: 10px;
+  width: 100%; padding: 6px 4px; background: none; border: 0; border-radius: 0; text-align: left; color: inherit; font: inherit;
 }
-.a-info[aria-expanded="true"] { background: var(--brand-soft); color: var(--brand-ink); border-color: transparent; }
-.a-note { display: block; margin-top: 4px; font: 12px/1.4 var(--font); color: var(--text-2); }
+button.a-row { cursor: pointer; }
+button.a-row:hover, button.a-row.on { background: var(--surface-2); }
+button.a-row:focus-visible { outline: 2px solid var(--brand); outline-offset: -2px; }
+.a-label { display: inline-flex; align-items: center; min-width: 0; color: var(--muted); font-size: 13px; white-space: nowrap; }
+.a-label .g-sq.sm { margin-left: 6px; }
+.a-val { font: 600 13px var(--mono); color: var(--text); white-space: nowrap; }
+.a-bar { position: relative; display: block; height: 8px; border-radius: 3px; background: var(--surface-2); max-width: 160px; width: 100%; justify-self: end; }
+.a-bar.none { background: none; }
+.a-bar-fill { position: absolute; top: 0; bottom: 0; border-radius: 3px; background: color-mix(in srgb, var(--text-2) 55%, transparent); }
+.a-bar.good .a-bar-fill { background: var(--chg-1); }
+.a-bar.bad .a-bar-fill { background: var(--chg-5); }
+.a-bar-city { position: absolute; top: -3px; bottom: -3px; width: 2px; margin-left: -1px; border-radius: 1px; background: var(--text); }
+.a-bar-zero { position: absolute; top: -1px; bottom: -1px; width: 1px; background: var(--line-strong); }
+.a-more { margin: 0; padding: 2px 4px 8px; font-size: 12px; line-height: 1.45; color: var(--text-2); }
+.a-kv-note { margin: 0 0 10px; font-size: 11.5px; color: var(--muted); }
+
+/* ---- all-areas table: keep the sticky header above the grade squares scrolling beneath it ---- */
+.a-table-card table.data thead th { z-index: 3; }
+.a-table-card table.data th, .a-table-card table.data td { padding-inline: 8px; }
+.a-table-card .a-zip { display: block; font-size: 11.5px; }
 
 @media (max-width: 560px) {
   .a-map-card .card-head .segmented > * { padding: 5px 9px; font-size: 12.5px; }
-  .a-detail .kv { grid-template-columns: minmax(0, 6.8rem) minmax(0, 1fr); gap: 6px 10px; font-size: 13px; }
-  .a-detail .kv dd { font-size: 12.5px; }
+  .a-row { grid-template-columns: minmax(0, 7.4rem) 5.6rem minmax(36px, 1fr); gap: 8px; }
+  .a-label { font-size: 12.5px; }
+  .a-val { font-size: 12.5px; }
 }
+.a-table-card table.data th { white-space: normal; vertical-align: bottom; line-height: 1.3; }
+.a-table-card table.data th .sort { white-space: normal; text-align: inherit; }
+.a-table-card table.data td:first-child { white-space: normal; min-width: 130px; max-width: 170px; }
+@media (min-width: 900px) { .a-table-card table.data th, .a-table-card table.data td { padding-inline: 6px; } }

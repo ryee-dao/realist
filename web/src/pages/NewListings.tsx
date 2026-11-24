@@ -1,42 +1,14 @@
 import '../styles/finder.css'
 import '../styles/listing-cards.css'
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { Area, Areas, City, useData } from '../lib/data'
 import { Theme } from '../lib/hooks'
 import { usdCompact } from '../lib/format'
-import { activityPercentiles, percentiles, rankPool, Tier, tierStyle, useRamp } from '../lib/grades'
+import { activityPercentiles, percentiles, rankPool, Tier, TIERS, tierStyle, useRamp } from '../lib/grades'
 import ListingsMap, { ListingPin } from '../components/ListingsMap'
-
-// ---- engine/listing_cards.py output ----
-type Item = { text: string; kind: 'model' | 'area' | 'sold' | 'description' | 'photo'; why?: string }
-type Part = { label: string; pct: number; driver: string; notRecorded?: boolean }
-type Estimate = {
-  kind: 'model' | 'ppsf' | 'median'; value: number; vsPct: number; low?: number; high?: number
-  error: number | null; errorBand?: string | null
-  base?: number; area?: { label: string; pct: number }; parts?: Part[]
-  ppsf?: number; sqft?: number
-}
-type Card = {
-  id: string; url: string; address: string | null; date: string | null; price: number | null; source: string | null
-  links: { source: string | null; url: string }[]
-  facts: { beds?: number; baths?: number; sqft?: number; type?: string; homeType?: string }
-  lat?: number; lon?: number; inSnapshot?: false; firstSeen?: string; lastSeen?: string
-  area?: { key: string; name: string; mapping: string }
-  sold?: { ppsf12?: number; median12?: number; sales12?: number; vsPpsfPct?: number; vsMedianPct?: number; topType?: string; topTypeShare?: number }
-  estimate?: Estimate
-  lastSale?: { date: string; price: number; recentResale?: boolean }
-  plus: Item[]; minus: Item[]; tags?: string[]
-  photo?: { findings: number; crops: { src: string; label: string }[]; credit: string | null; creditUrl: string | null
-    condition: string | null; coverage: string | null; seen: string | null; possiblyEdited: boolean }
-}
-type CardsDoc = {
-  city: string; asOf: string | null; from: string | null; through: string | null
-  sold: { through: string | null; basis: string }
-  model: { error: number | null; ppsfError: number | null; level: string[] | null } | null
-  photoTagging: boolean; retentionDays: number | null
-  summary: { cards: number; withPin: number; withSqft: number }
-  cards: Card[]
-}
+import ListingPanel from '../components/ListingPanel'
+import { Breakdown, Card, CardsDoc, Item, money, monthYear, shortDate } from '../components/listingParts'
 
 // ---- area tiers: the Find areas factors and maths (lib/grades.ts), with this page's own saved weights ----
 type Factor = 'yield' | 'growth1' | 'growth5' | 'price' | 'activity' | 'crime'
@@ -52,9 +24,10 @@ const PRESETS: { id: string; label: string; w: Weights }[] = [
   { id: 'entry', label: 'Low entry price', w: { yield: 2, growth1: 1, growth5: 0, price: 5, activity: 2, crime: 1 } },
   { id: 'balanced', label: 'Balanced', w: { yield: 2, growth1: 2, growth5: 2, price: 2, activity: 2, crime: 2 } },
 ]
-const PAGE = 150       // cards (and their pins) shown before "Show more"
+const PER_PAGE = 10
 const STALE_DAYS = 14   // a home no publisher's read has listed for this long may have sold
-const MIN_SALES = 30   // the Find areas default pool
+const MIN_SALES = 30    // the Find areas default pool
+const SHOWN_ITEMS = 3   // plus or minus lines per card before "+N"
 function raw(a: Area, f: Factor): number | null {
   switch (f) {
     case 'yield': return a.yield
@@ -82,6 +55,24 @@ function savedWeights(): Weights {
     ? w as Weights : PRESETS[0].w
 }
 
+// ---- filters and sort, kept in the hash query (#/city/listings?min=…&sort=…) ----
+type Filters = { min: string; max: string; beds: string; baths: string; tier: string; cond: string; est: string; th: string; sort: string; page: string; home: string }
+const DEFAULTS: Filters = { min: '', max: '', beds: '', baths: '', tier: '', cond: '', est: '', th: '10', sort: 'new', page: '1', home: '' }
+const SORTS = [['new', 'Newest'], ['old', 'Oldest'], ['plo', 'Price: low to high'], ['phi', 'Price: high to low'], ['gap', 'Most under estimate']]
+function readFilters(): Filters {
+  const q = new URLSearchParams(window.location.hash.split('?')[1] ?? '')
+  return Object.fromEntries(Object.entries(DEFAULTS).map(([k, v]) => [k, q.get(k) ?? v])) as Filters
+}
+function hashFor(f: Filters) {
+  const q = new URLSearchParams(Object.entries(f).filter(([k, v]) => v !== DEFAULTS[k as keyof Filters]))
+  return `${window.location.hash.split('?')[0]}${q.toString() ? `?${q}` : ''}`
+}
+function writeFilters(f: Filters) {
+  try {
+    if (hashFor(f) !== window.location.hash) history.replaceState(null, '', hashFor(f))
+  } catch { /* not allowed: state just is not shared */ }
+}
+
 /** The page is not handed the theme, so follow the attribute the app sets on <html>. */
 function useDocTheme(): Theme {
   const get = (): Theme => (document.documentElement.dataset.theme === 'light' ? 'light' : 'dark')
@@ -94,13 +85,10 @@ function useDocTheme(): Theme {
   return theme
 }
 
-const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
-const shortDate = (d: string) => `${MONTHS[+d.slice(5, 7) - 1]} ${+d.slice(8, 10)}`
-const monthYear = (d: string) => `${MONTHS[+d.slice(5, 7) - 1]} ${d.slice(0, 4)}`
-const money = (n: number) => '$' + Math.round(n).toLocaleString('en-US')
 const ago = (days: number) => days <= 0 ? 'today' : days === 1 ? 'yesterday' : days < 60 ? `${days} days ago` : `${Math.round(days / 30)} months ago`
 const pinLabel = (n: number) => (n >= 995_000 ? `$${(n / 1e6).toFixed(n >= 9_950_000 ? 0 : 1).replace(/[.]0$/, '')}M` : `$${Math.max(1, Math.round(n / 1e3))}K`)
 const ageClass = (days: number): 0 | 1 | 2 => (days < 30 ? 0 : days < 90 ? 1 : 2)
+const hasSignal = (c: Card, ...names: string[]) => names.some((n) => c.signals?.includes(n))
 
 export default function NewListings({ city }: { city: City }) {
   const { data, error } = useData<CardsDoc>(`${city.id}/listing-cards.json`)
@@ -113,11 +101,16 @@ export default function NewListings({ city }: { city: City }) {
   const [hover, setHover] = useState<string | null>(null)
   const [picked, setPicked] = useState<string | null>(null)
   const [view, setView] = useState<'list' | 'map'>('list')
-  const [limit, setLimit] = useState(PAGE)   // homes accumulate for months; cards and pins are shown a page at a time
+  const [f, setF] = useState<Filters>(readFilters)
+  const [drawer, setDrawer] = useState(false)
   const listRef = useRef<HTMLDivElement>(null)
+  const [title, setTitle] = useState<Element | null>(null)
 
   useEffect(() => writeJSON(W_KEY, w), [w])
   useEffect(() => writeJSON(HIDE_KEY(city.id), hidden), [hidden, city.id])
+  useEffect(() => writeFilters(f), [f])
+  useEffect(() => setTitle(document.querySelector('.page-head h1')), [])
+  const set = (patch: Partial<Filters>) => setF((x) => ({ ...x, page: '1', ...patch }))
 
   const timeZone = city.id === 'chicago' ? 'America/Chicago' : 'America/New_York'
   const today = new Intl.DateTimeFormat('sv-SE', { timeZone }).format(new Date())
@@ -126,133 +119,231 @@ export default function NewListings({ city }: { city: City }) {
   // area tiers under the current weights (same pool, factors and ranking as Find areas)
   const tiers = useMemo(() => {
     const list = (areasDoc?.areas ?? []).filter((a) => a.median12 != null && a.sales12 >= MIN_SALES)
-    const pc = FACTORS.map((f) => f.id === 'activity'
+    const pc = FACTORS.map((x) => x.id === 'activity'
       ? activityPercentiles(list, (a) => a.key, (a) => a.sales12, [(a) => a.listings?.active ?? null, (a) => a.listings?.newListings ?? null])
-      : percentiles(list, (a) => a.key, (a) => raw(a, f.id)))
+      : percentiles(list, (a) => a.key, (a) => raw(a, x.id)))
     const pool = list.map((a) => ({ key: a.key, pctl: Object.fromEntries(IDS.flatMap((id, i) => (pc[i].has(a.key) ? [[id, pc[i].get(a.key)]] : []))) as Partial<Record<Factor, number>> }))
-    return new Map(rankPool(pool, IDS, w).ranked.map((r) => [r.key, { tier: r.tier, rank: r.rank, of: pool.length }]))
+    return new Map(rankPool(pool, IDS, w).ranked.map((r) => [r.key, r.tier]))
   }, [areasDoc, w])
 
   const hiddenSet = useMemo(() => new Set(hidden), [hidden])
-  const visible = useMemo(() => (data?.cards ?? []).filter((c) => showHidden || !hiddenSet.has(c.id)), [data, hiddenSet, showHidden])
-  const cards = useMemo(() => visible.slice(0, limit), [visible, limit])
   const hiddenCount = (data?.cards ?? []).filter((c) => hiddenSet.has(c.id)).length
-  const pins: ListingPin[] = useMemo(() => cards.filter((c) => c.lat != null && c.lon != null).map((c) => ({
-    id: c.id, lat: c.lat!, lon: c.lon!, label: c.price ? pinLabel(c.price) : '?', age: ageClass(daysSince(c.date)),
-    tip: `Asking ${c.price ? money(c.price) : 'not given'} · ${c.address ?? ''}`,
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  })), [cards, today])
+  const filtered = useMemo(() => {
+    const min = +f.min || 0, max = +f.max || Infinity, th = +f.th || 10
+    const tierMax = f.tier ? TIERS.indexOf(f.tier as Tier) : 4
+    const out = (data?.cards ?? []).filter((c) => {
+      if (!showHidden && hiddenSet.has(c.id)) return false
+      if ((f.min || f.max) && (c.price == null || c.price < min || c.price > max)) return false
+      if (f.beds && !((c.facts.beds ?? -1) >= +f.beds)) return false
+      if (f.baths && !((c.facts.baths ?? -1) >= +f.baths)) return false
+      if (f.tier) { const t = c.area && tiers.get(c.area.key); if (!t || TIERS.indexOf(t) > tierMax) return false }
+      if (f.cond === 'defects' && !c.photo?.findings) return false
+      if (f.cond === 'asis' && !hasSignal(c, 'as_is', 'needs_work', 'investor_special')) return false
+      if (f.cond === 'renovated' && !hasSignal(c, 'renovated', 'new_construction')) return false
+      if (f.cond === 'none' && c.photo) return false
+      if (f.est === 'under' && !(c.estimate && c.estimate.vsPct <= -th)) return false
+      if (f.est === 'over' && !(c.estimate && c.estimate.vsPct >= th)) return false
+      return true
+    })
+    const by = {
+      new: (a: Card, b: Card) => (b.date ?? '').localeCompare(a.date ?? ''),
+      old: (a: Card, b: Card) => (a.date ?? '').localeCompare(b.date ?? ''),
+      plo: (a: Card, b: Card) => (a.price ?? Infinity) - (b.price ?? Infinity),
+      phi: (a: Card, b: Card) => (b.price ?? -1) - (a.price ?? -1),
+      gap: (a: Card, b: Card) => (a.estimate?.vsPct ?? Infinity) - (b.estimate?.vsPct ?? Infinity),
+    }[f.sort] ?? (() => 0)
+    return out.sort(by)
+  }, [data, f, tiers, hiddenSet, showHidden])
 
+  const pages = Math.max(1, Math.ceil(filtered.length / PER_PAGE))
+  const page = Math.min(pages, Math.max(1, +f.page || 1))
+  const cards = filtered.slice((page - 1) * PER_PAGE, page * PER_PAGE)
+  const onPage = useMemo(() => new Set(cards.map((c) => c.id)), [cards])
+  const pins: ListingPin[] = useMemo(() => {
+    const all = filtered.filter((c) => c.lat != null && c.lon != null).map((c) => ({
+      id: c.id, lat: c.lat!, lon: c.lon!, label: c.price ? pinLabel(c.price) : '?', age: ageClass(daysSince(c.date)),
+      tip: `Asking ${c.price ? money(c.price) : 'not given'} · ${c.address ?? ''}`, dim: !onPage.has(c.id),
+    }))
+    return [...all.filter((p) => !p.dim), ...all.filter((p) => p.dim)]   // the page's pins are labelled first
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filtered, onPage, today])
+
+  const goPage = (p: number) => {
+    setF((x) => ({ ...x, page: String(p) }))
+    requestAnimationFrame(() => listRef.current?.scrollIntoView({ block: 'start', behavior: 'smooth' }))
+  }
   const pick = (id: string) => {
+    const i = filtered.findIndex((c) => c.id === id)
+    if (i >= 0 && Math.floor(i / PER_PAGE) + 1 !== page) setF((x) => ({ ...x, page: String(Math.floor(i / PER_PAGE) + 1) }))
     setPicked(id)
-    requestAnimationFrame(() => listRef.current?.querySelector(`[data-id="${CSS.escape(id)}"]`)?.scrollIntoView({ block: 'nearest', behavior: 'smooth' }))
+    setTimeout(() => listRef.current?.querySelector(`[data-id="${CSS.escape(id)}"]`)?.scrollIntoView({ block: 'nearest', behavior: 'smooth' }), 50)
   }
   const toggleHide = (id: string) => setHidden((h) => (h.includes(id) ? h.filter((x) => x !== id) : [...h, id]))
   const active = hover ?? picked
 
+  // the detail panel: ?home=<id> in the hash, pushed so Back closes it
+  const pushed = useRef(false)
+  const openHome = (id: string) => {
+    if (!f.home) {
+      try { history.pushState(null, '', hashFor({ ...readFilters(), home: id })); pushed.current = true } catch { /* no history: Close still works */ }
+    }
+    setF((x) => ({ ...x, home: id }))
+    setPicked(id)
+  }
+  const closeHome = () => {
+    if (pushed.current) { pushed.current = false; history.back() } else setF((x) => ({ ...x, home: '' }))
+  }
+  useEffect(() => {
+    // Back/Forward: re-read the hash; keep the scroll position the app resets on a hash change
+    const pop = () => { const y = window.scrollY; pushed.current = false; setF(readFilters()); requestAnimationFrame(() => window.scrollTo(0, y)) }
+    window.addEventListener('popstate', pop)
+    return () => window.removeEventListener('popstate', pop)
+  }, [])
+  const openCard = (data?.cards ?? []).find((c) => c.id === f.home)
+
+  const badge = title && data ? createPortal(<span className="lc-count" aria-label={`${filtered.length} homes`}>{filtered.length}</span>, title) : null
   if (!data) return <section className="card"><p className="muted">{error ? 'Listings could not be loaded.' : 'Loading listings…'}</p></section>
 
-  const noPin = cards.length - pins.length
-  const pickedCard = cards.find((c) => c.id === picked)
-  const cardProps = { city, data, tiers, ramp, daysSince, hiddenSet, toggleHide }
+  const cardProps = { city, tiers, ramp, daysSince, hiddenSet, toggleHide, photoCity: data.photoTagging, onOpen: openHome }
+  const activeCount = (['min', 'max', 'beds', 'baths', 'tier', 'cond', 'est'] as const).filter((k) => f[k]).length
 
   return <div className="lc">
-    <section className="card lc-head">
-      <p className="lc-lede">
-        {data.summary.cards} homes for sale{data.from && data.through ? `, listed ${shortDate(data.from)}–${shortDate(data.through)}` : ''}, newest first.
-        {' '}Asking prices from publishers’ pages{data.asOf ? `, read ${new Date(data.asOf).toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone })}` : ''}.
-      </p>
-      <Weights w={w} setW={setW} tiers={tiers.size} />
+    {badge}
+    <section className="card lc-controls">
       <div className="lc-bar">
+        <button className={`ghost small lc-drawer-btn ${drawer ? 'on' : ''}`} aria-expanded={drawer} onClick={() => setDrawer(!drawer)}>
+          Filters{activeCount ? ` (${activeCount})` : ''}</button>
         <div className="segmented lc-toggle" role="group" aria-label="View">
           {(['list', 'map'] as const).map((v) => <button key={v} className={view === v ? 'on' : ''} aria-pressed={view === v} onClick={() => setView(v)}>{v === 'list' ? 'List' : 'Map'}</button>)}
         </div>
-        {hiddenCount > 0 && <span className="muted">Hidden ({hiddenCount}) · <button className="lc-link" onClick={() => setShowHidden(!showHidden)}>{showHidden ? 'hide again' : 'show'}</button></span>}
-        {noPin > 0 && <span className="muted">{noPin} without a map location</span>}
+        {(activeCount > 0 || hiddenCount > 0) && <span className="lc-small muted lc-clear">
+          {activeCount > 0 && <button className="lc-link" onClick={() => setF({ ...DEFAULTS, sort: f.sort })}>Clear filters</button>}
+          {activeCount > 0 && hiddenCount > 0 && ' · '}
+          {hiddenCount > 0 && <>Hidden ({hiddenCount}) · <button className="lc-link" onClick={() => setShowHidden(!showHidden)}>{showHidden ? 'hide' : 'show'}</button></>}
+        </span>}
+        <label className="lc-f lc-sort"><span>Sort</span>
+          <select value={f.sort} onChange={(e) => set({ sort: e.target.value })}>{SORTS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select></label>
+      </div>
+      <div className={`lc-filters ${drawer ? 'open' : ''}`}>
+        <label className="lc-f"><span>Price</span>
+          <span className="lc-range">
+            <input inputMode="numeric" placeholder="Min" value={f.min} aria-label="Minimum asking price" onChange={(e) => set({ min: e.target.value.replace(/\D/g, '') })} />
+            <span>–</span>
+            <input inputMode="numeric" placeholder="Max" value={f.max} aria-label="Maximum asking price" onChange={(e) => set({ max: e.target.value.replace(/\D/g, '') })} />
+          </span></label>
+        <label className="lc-f"><span>Beds</span>
+          <select value={f.beds} onChange={(e) => set({ beds: e.target.value })}><option value="">Any</option>{[1, 2, 3, 4, 5].map((n) => <option key={n} value={n}>{n}+</option>)}</select></label>
+        <label className="lc-f"><span>Baths</span>
+          <select value={f.baths} onChange={(e) => set({ baths: e.target.value })}><option value="">Any</option>{[1, 2, 3].map((n) => <option key={n} value={n}>{n}+</option>)}</select></label>
+        <label className="lc-f"><span>Area tier</span>
+          <select value={f.tier} onChange={(e) => set({ tier: e.target.value })}><option value="">Any</option>
+            {TIERS.slice(0, 4).map((t, i) => <option key={t} value={t}>{i ? `${t} or better` : 'S only'}</option>)}</select></label>
+        <label className="lc-f"><span>Condition</span>
+          <select value={f.cond} onChange={(e) => set({ cond: e.target.value })}><option value="">Any</option>
+            {data.photoTagging && <option value="defects">Defects noted</option>}
+            <option value="asis">As-is / needs work</option><option value="renovated">Renovated / new</option>
+            {data.photoTagging && <option value="none">Photos not analysed</option>}</select></label>
+        <label className="lc-f"><span>Vs estimate</span>
+          <span className="lc-range">
+            <select value={f.est} onChange={(e) => set({ est: e.target.value })}><option value="">Any</option>
+              <option value="under">Asking under</option><option value="over">Asking over</option></select>
+            {f.est && <select value={f.th} aria-label="By at least" onChange={(e) => set({ th: e.target.value })}>
+              {['5', '10', '20'].map((t) => <option key={t} value={t}>by {t}%+</option>)}</select>}
+          </span></label>
+        <details className="lc-weights">
+          <summary title={`Area tiers use: ${presetFor(w)?.label ?? 'custom weights'}`}>Tier weights</summary>
+          <div className="lc-weights-body">
+            <div className="segmented" role="group" aria-label="Weights">
+              {PRESETS.map((p) => <button key={p.id} className={presetFor(w)?.id === p.id ? 'on' : ''} onClick={() => setW(p.w)}>{p.label}</button>)}
+            </div>
+            <div className="weights f-weights">
+              {FACTORS.map((x) => <div className="weight" key={x.id}>
+                <label className="weight-top" htmlFor={`lw-${x.id}`}><b>{x.label}</b><span>{w[x.id] === 0 ? 'off' : w[x.id]}</span></label>
+                <input id={`lw-${x.id}`} type="range" min={0} max={5} step={1} value={w[x.id]}
+                  onChange={(e) => { const nw = { ...w, [x.id]: +e.target.value }; if (IDS.some((id) => nw[id] > 0)) setW(nw) }} />
+              </div>)}
+            </div>
+          </div>
+        </details>
       </div>
     </section>
 
     <div className={`lc-split view-${view}`}>
       <div className="lc-mapcol">
-        <ListingsMap center={city.center} zoom={city.zoom} pins={pins} active={active} focus={picked} onHover={setHover} onPick={pick}
+        <ListingsMap center={city.center} zoom={city.zoom} pins={pins} active={active} focus={picked} onHover={setHover} onPick={(id) => { pick(id); openHome(id) }}
           height="var(--lc-map-h)" visible={view === 'map'} />
         <div className="map-legend lc-legend" aria-label="Pin style by days on market">
-          <span><i className="lc-pin a0">$</i>under 30 days</span><span><i className="lc-pin a1">$</i>30–90 days</span><span><i className="lc-pin a2">$</i>over 90 days</span>
-          <span className="muted">Pins show asking price</span>
+          <span><i className="lc-pin a0">$</i>&lt; 30 days</span><span><i className="lc-pin a1">$</i>30–90</span><span><i className="lc-pin a2">$</i>90+</span>
+          <span><i className="lc-pin a0 off dot" />other pages</span>
         </div>
-        {view === 'map' && pickedCard && <div className="lc-mapcard"><ListingCard c={pickedCard} on {...cardProps} onHover={() => {}} /></div>}
       </div>
       <div className="lc-list" ref={listRef}>
         {cards.map((c) => <ListingCard key={c.id} c={c} on={c.id === active} onHover={setHover} {...cardProps} />)}
-        {!cards.length && <p className="muted">No homes to show.</p>}
-        {visible.length > cards.length && <button className="ghost" onClick={() => setLimit(limit + PAGE)}>
-          Show more ({visible.length - cards.length} older)</button>}
+        {!cards.length && <p className="muted">No homes match.</p>}
+        {pages > 1 && <Pager page={page} pages={pages} go={goPage} />}
       </div>
     </div>
 
+    {openCard && <ListingPanel c={openCard} city={city} area={areasDoc?.areas.find((a) => a.key === openCard.area?.key) ?? null}
+      areas={areasDoc?.areas ?? []} tier={openCard.area ? tiers.get(openCard.area.key) : undefined} ramp={ramp}
+      cityGrowth={data.cityFigures?.growth1 ?? null} photoCity={data.photoTagging} hidden={hiddenSet.has(openCard.id)}
+      daysSince={daysSince} onHide={() => toggleHide(openCard.id)} onClose={closeHome} />}
     <p className="footnote">{data.photoTagging ? 'Photo notes come from an AI model and can be wrong.' : 'Photo analysis: Philadelphia only for now.'}</p>
   </div>
 }
 
-// ---- weights control ----
-function Weights({ w, setW, tiers }: { w: Weights; setW: (w: Weights) => void; tiers: number }) {
-  const preset = presetFor(w)
-  return <details className="lc-weights">
-    <summary>Area tiers: <b>{preset?.label ?? 'Custom weights'}</b> <span className="muted">· change</span></summary>
-    <div className="lc-weights-body">
-      <div className="segmented" role="group" aria-label="Weights">
-        {PRESETS.map((p) => <button key={p.id} className={preset?.id === p.id ? 'on' : ''} aria-pressed={preset?.id === p.id} onClick={() => setW(p.w)}>{p.label}</button>)}
-      </div>
-      <div className="weights f-weights">
-        {FACTORS.map((f) => <div className="weight" key={f.id}>
-          <label className="weight-top" htmlFor={`lw-${f.id}`}><b>{f.label}</b><span>{w[f.id] === 0 ? 'off' : w[f.id]}</span></label>
-          <input id={`lw-${f.id}`} type="range" min={0} max={5} step={1} value={w[f.id]}
-            onChange={(e) => { const nw = { ...w, [f.id]: +e.target.value }; if (IDS.some((id) => nw[id] > 0)) setW(nw) }} />
-        </div>)}
-      </div>
-      <p className="muted lc-small">Same scoring as Find areas: {tiers} areas with {MIN_SALES}+ sales a year, S best to D. Saved in this browser.</p>
-    </div>
-  </details>
+function Pager({ page, pages, go }: { page: number; pages: number; go: (p: number) => void }) {
+  const nums = [...new Set([1, page - 1, page, page + 1, pages].filter((n) => n >= 1 && n <= pages))].sort((a, b) => a - b)
+  return <nav className="lc-pager" aria-label="Pages">
+    <button className="ghost small" disabled={page <= 1} onClick={() => go(page - 1)}>‹ Prev</button>
+    {nums.map((n, i) => <span key={n} className="lc-pager-n">
+      {i > 0 && n - nums[i - 1] > 1 && <span className="muted">…</span>}
+      <button className={`ghost small ${n === page ? 'on' : ''}`} aria-current={n === page ? 'page' : undefined} onClick={() => go(n)}>{n}</button>
+    </span>)}
+    <button className="ghost small" disabled={page >= pages} onClick={() => go(page + 1)}>Next ›</button>
+  </nav>
 }
 
 // ---- one card ----
 interface CardProps {
+  onOpen: (id: string) => void
   c: Card; on: boolean; onHover: (id: string | null) => void
-  city: City; data: CardsDoc; tiers: Map<string, { tier: Tier; rank: number; of: number }>
-  ramp: ReturnType<typeof useRamp>; daysSince: (d: string | null) => number
-  hiddenSet: Set<string>; toggleHide: (id: string) => void
+  city: City; tiers: Map<string, Tier>; ramp: ReturnType<typeof useRamp>; daysSince: (d: string | null) => number
+  hiddenSet: Set<string>; toggleHide: (id: string) => void; photoCity: boolean
 }
 
-function ListingCard({ c, on, onHover, city, data, tiers, ramp, daysSince, hiddenSet, toggleHide }: CardProps) {
-  const days = daysSince(c.date)
+function ListingCard({ c, on, onHover, city, tiers, ramp, daysSince, hiddenSet, toggleHide, photoCity, onOpen }: CardProps) {
   const t = c.area ? tiers.get(c.area.key) : undefined
-  const f = c.facts
-  const facts = [f.beds != null && `${f.beds} bd`, f.baths != null && `${f.baths} ba`, f.sqft && `${f.sqft.toLocaleString('en-US')} sq ft`,
-    f.sqft && c.price && `$${Math.round(c.price / f.sqft)}/sq ft`, f.type ?? f.homeType].filter(Boolean).join(' · ')
+  const fx = c.facts
+  const facts = [fx.beds != null && `${fx.beds} bd`, fx.baths != null && `${fx.baths} ba`, fx.sqft && `${fx.sqft.toLocaleString('en-US')} sq ft`,
+    fx.homeType ?? fx.type].filter(Boolean).join(' · ')
   const isHidden = hiddenSet.has(c.id)
+  const stale = c.lastSeen && daysSince(c.lastSeen) > STALE_DAYS
   return <article className={`lc-card ${on ? 'on' : ''} ${isHidden ? 'is-hidden' : ''}`} data-id={c.id}
-    onMouseEnter={() => onHover(c.id)} onMouseLeave={() => onHover(null)}>
+    onMouseEnter={() => onHover(c.id)} onMouseLeave={() => onHover(null)}
+    onClick={(ev) => { if (!(ev.target as HTMLElement).closest('a, button, input, select, .lc-pop')) onOpen(c.id) }}>
     <div className="lc-top">
       <div>
         <div className="lc-price"><small>Asking</small> {c.price ? money(c.price) : 'not given'}</div>
-        <div className="muted lc-small">{c.date ? <>Listed {shortDate(c.date)} · {ago(days)}</> : 'List date not given'}{c.inSnapshot === false ? ' · not in the latest read' : ''}</div>
-        {c.lastSeen && daysSince(c.lastSeen) > STALE_DAYS && <div className="muted lc-small">Last seen {shortDate(c.lastSeen)} — may be off the market</div>}
+        <div className="muted lc-small">{c.date ? <>Listed {shortDate(c.date)} · {ago(daysSince(c.date))}</> : 'List date not given'}</div>
+        {stale && <div className="muted lc-small">Last seen {shortDate(c.lastSeen!)} — may be off the market</div>}
       </div>
-      {c.estimate && c.price ? <Headline c={c} e={c.estimate} city={city} data={data} /> : null}
+      <Headline c={c} city={city} />
     </div>
-    <a className="lc-addr" href={c.url} target="_blank" rel="noopener noreferrer">{c.address ?? 'Address not given'}</a>
+    <div className="lc-addr"><button className="lc-open" onClick={() => onOpen(c.id)}>{c.address ?? 'Address not given'}</button>
+      <a className="lc-ext" href={c.url} target="_blank" rel="noopener noreferrer" title={`Open on ${c.links[0]?.source ?? 'the publisher'}`} aria-label="Open the publisher's listing">↗</a></div>
     {facts && <div className="muted lc-small">{facts}</div>}
     {c.area && <div className="lc-area">
-      {t ? <span className="f-tier" style={tierStyle(t.tier, ramp)} aria-hidden="true">{t.tier}</span> : null}
-      <span>{t ? `Area tier ${t.tier}` : 'No tier'} · {c.area.name}</span>
+      {t ? <span className="f-tier" style={tierStyle(t, ramp)} aria-hidden="true">{t}</span> : null}
+      <span>{t ? `Tier ${t} · ` : ''}{c.area.name}</span>
       <a className="lc-small" href={`#/${city.id}/areas?area=${encodeURIComponent(c.area.key)}`}>Detailed View ›</a>
     </div>}
     <PlusMinus c={c} />
-    {c.tags?.length || c.lastSale ? <div className="lc-tags">
-      {c.lastSale && <span className="chip" title="The latest recorded sale of this address (public records)">Last sold {usdCompact(c.lastSale.price)}, {monthYear(c.lastSale.date)}</span>}
+    {(c.lastSale || c.tags?.length) ? <div className="lc-tags">
+      {c.lastSale && <span className="chip" title="Latest recorded sale of this address">Sold {usdCompact(c.lastSale.price)} in {monthYear(c.lastSale.date)}</span>}
       {c.tags?.map((x) => <span key={x} className="chip">{x}</span>)}
     </div> : null}
-    {data.photoTagging && <Photos c={c} />}
+    {photoCity && c.photo && <Photos c={c} />}
     <div className="lc-foot">
       <span className="lc-small">{c.links.map((l, i) => <span key={l.url}>{i ? ' · ' : ''}<a href={l.url} target="_blank" rel="noopener noreferrer">{l.source ?? 'Listing'} ↗</a></span>)}</span>
       <button className="lc-link" onClick={() => toggleHide(c.id)}>{isHidden ? 'Unhide' : 'Hide'}</button>
@@ -262,27 +353,27 @@ function ListingCard({ c, on, onHover, city, data, tiers, ramp, daysSince, hidde
 
 function PlusMinus({ c }: { c: Card }) {
   const [all, setAll] = useState(false)
-  const MAX = 4
   // the home itself first (photos, description, price model), then the price against sales, then the area
   const order = (k: Item['kind']) => ['photo', 'description', 'model', 'sold', 'area'].indexOf(k)
   const byKind = (a: Item, b: Item) => order(a.kind) - order(b.kind)
-  const rows = [...[...c.plus].sort(byKind).map((x) => ({ ...x, s: '+' as const })), ...[...c.minus].sort(byKind).map((x) => ({ ...x, s: '−' as const }))]
+  const plus = [...c.plus].sort(byKind), minus = [...c.minus].sort(byKind)
+  const rows = [...(all ? plus : plus.slice(0, SHOWN_ITEMS)).map((x) => ({ ...x, s: '+' as const })),
+    ...(all ? minus : minus.slice(0, SHOWN_ITEMS)).map((x) => ({ ...x, s: '−' as const }))]
+  const more = plus.length + minus.length - rows.length
   if (!rows.length) return null
-  const shown = all ? rows : [...rows.filter((r) => r.s === '+').slice(0, MAX), ...rows.filter((r) => r.s === '−').slice(0, MAX)]
   return <ul className="lc-pm">
-    {shown.map((r, i) => <li key={i} className={r.s === '+' ? 'plus' : 'minus'} title={r.why}>
+    {rows.map((r, i) => <li key={i} className={r.s === '+' ? 'plus' : 'minus'} title={r.why}>
       <b aria-label={r.s === '+' ? 'plus' : 'minus'}>{r.s}</b><span>{r.text}</span></li>)}
-    {shown.length < rows.length && <li><button className="lc-link" onClick={() => setAll(true)}>+{rows.length - shown.length} more</button></li>}
+    {more > 0 && <li><button className="lc-link" onClick={() => setAll(true)}>+{more} more</button></li>}
   </ul>
 }
 
 function Photos({ c }: { c: Card }) {
-  const p = c.photo
-  if (!p) return <div className="muted lc-small">Photos not analysed</div>
+  const p = c.photo!
   const href = p.creditUrl ?? c.url
   const credit = p.credit ?? c.source ?? 'the publisher'
   return <div className="lc-photos">
-    <span className="lc-small">{p.findings ? `${p.findings} ${p.findings === 1 ? 'defect' : 'defects'} noted in photos` : 'No defects noted in photos (photos can’t rule problems out)'}</span>
+    <span className="lc-small" title="Photos can show a problem; they can't rule one out.">{p.findings ? `${p.findings} ${p.findings === 1 ? 'defect' : 'defects'} in photos` : 'No defects seen in photos'}</span>
     {p.crops.length > 0 && <span className="lc-crops">
       {p.crops.slice(0, 5).map((x) => <a key={x.src} href={href} target="_blank" rel="noopener noreferrer" title={`${x.label}. Crop of a ${credit} photo; opens the listing.`}>
         <img src={`data/${x.src}`} alt={`${x.label}, detected in a listing photo`} loading="lazy" width={36} height={36} /></a>)}
@@ -292,7 +383,7 @@ function Photos({ c }: { c: Card }) {
 }
 
 // ---- the headline number and its breakdown ----
-function Headline({ c, e, city, data }: { c: Card; e: Estimate; city: City; data: CardsDoc }) {
+function Headline({ c, city }: { c: Card; city: City }) {
   const [open, setOpen] = useState(false)
   const [pinned, setPinned] = useState(false)
   const box = useRef<HTMLDivElement>(null)
@@ -303,59 +394,17 @@ function Headline({ c, e, city, data }: { c: Card; e: Estimate; city: City; data
     document.addEventListener('touchstart', off)
     return () => { document.removeEventListener('mousedown', off); document.removeEventListener('touchstart', off) }
   }, [pinned])
-  const v = Math.round(e.vsPct)
-  const within = e.error != null && Math.abs(e.vsPct) <= e.error
-  const what = e.kind === 'model' ? 'estimate' : e.kind === 'ppsf' ? 'sold $/sq ft' : 'area median'
-  const word = v === 0 ? 'at' : v < 0 ? 'under' : 'over'
+  const e = c.price ? c.estimate : undefined
+  const v = e ? Math.round(e.vsPct) : 0
+  const within = e && e.error != null && Math.abs(e.vsPct) <= e.error
+  const what = !e ? '' : e.kind === 'model' ? `est. ${usdCompact(e.value)}` : e.kind === 'ppsf' ? 'area $/sq ft' : 'area median'
   return <div className="lc-head-num" ref={box} onMouseEnter={() => setOpen(true)} onMouseLeave={() => !pinned && setOpen(false)}>
-    <button className={`lc-score ${within ? 'within' : v < 0 ? 'under' : 'over'}`} aria-expanded={open}
+    <button className={`lc-score ${!e ? 'none' : within ? 'within' : v < 0 ? 'under' : 'over'}`} aria-expanded={open}
       onClick={() => { setPinned(!pinned); setOpen(!pinned) }} onFocus={() => setOpen(true)} onBlur={() => !pinned && setOpen(false)}>
-      <b>{v === 0 ? '≈0%' : `${Math.abs(v)}% ${word}`}</b>
-      <small>{what}{e.kind !== 'median' ? ` ~${usdCompact(e.value)}` : ''}{within ? ' · within typical error' : ''}</small>
+      {e ? <><b>{v === 0 ? '≈ same' : `${Math.abs(v)}% ${v < 0 ? 'under' : 'over'}`}</b><small>{what}</small></> : <><b>No estimate</b><small>why?</small></>}
     </button>
-    {open && <Breakdown c={c} e={e} city={city} data={data} />}
-  </div>
-}
-
-function Bar({ pct, max }: { pct: number; max: number }) {
-  const w = Math.min(50, (Math.abs(pct) / max) * 50)
-  return <span className="lc-bar-track" aria-hidden="true"><i className={pct >= 0 ? 'up' : 'down'} style={pct >= 0 ? { left: '50%', width: `${w}%` } : { right: '50%', width: `${w}%` }} /></span>
-}
-
-function Breakdown({ c, e, city, data }: { c: Card; e: Estimate; city: City; data: CardsDoc }) {
-  const through = data.sold.through ? monthYear(`${data.sold.through}-01`) : null
-  const range = e.low && e.high ? `${usdCompact(e.low)}–${usdCompact(e.high)}` : null
-  const err = e.error != null ? <p className="lc-err">Typical error ±{Math.round(e.error)}%{e.errorBand ? ` for ${e.errorBand} homes` : ''}: half of past sales landed further from {e.kind === 'model' ? 'the model' : 'this rule'} than that.</p> : null
-  const drivers = city.id === 'philadelphia' ? <a href={`#/${city.id}/drivers`}>Price drivers ›</a> : null
-  if (e.kind === 'model') {
-    const rows = [e.area!, ...(e.parts ?? [])]
-    const max = Math.max(20, ...rows.map((r) => Math.abs(r.pct)))
-    return <div className="lc-pop" role="dialog" aria-label="How the estimate is built">
-      <p className="lc-pop-title">Estimate about {usdCompact(e.value)}{range ? <span className="muted"> · range {range}</span> : null}</p>
-      <div className="lc-rows">
-        <div className="lc-row base"><span>City reference home</span><span className="lc-v">{usdCompact(e.base)}</span></div>
-        {rows.map((r) => <div className={`lc-row ${(r as Part).notRecorded ? 'nr' : ''}`} key={r.label}>
-          <span>{r.label}</span><Bar pct={r.pct} max={max} /><span className="lc-v">{r.pct > 0 ? '+' : '−'}{Math.abs(Math.round(r.pct))}%</span></div>)}
-      </div>
-      {err}
-      <p className="muted lc-small">Priced from the city’s property record for this address{c.lastSale?.recentResale ? `; it last sold for ${usdCompact(c.lastSale.price)} in ${monthYear(c.lastSale.date)}, so work since may not be in the record` : ', which can be out of date'}. Not an appraisal. {drivers}</p>
-    </div>
-  }
-  if (e.kind === 'ppsf') {
-    return <div className="lc-pop" role="dialog" aria-label="How the comparison is built">
-      <p className="lc-pop-title">About {usdCompact(e.value)} at the area’s sold $/sq ft</p>
-      <div className="lc-rows">
-        <div className="lc-row base"><span>Median sold $/sq ft, {c.area?.name}</span><span className="lc-v">${e.ppsf}</span></div>
-        <div className="lc-row base"><span>× floor area</span><span className="lc-v">{e.sqft?.toLocaleString('en-US')} sq ft</span></div>
-        <div className="lc-row base"><span>Asking $/sq ft</span><span className="lc-v">${c.price && e.sqft ? Math.round(c.price / e.sqft) : '–'}</span></div>
-      </div>
-      {err ?? <p className="lc-err">Not tested in this city. In Philadelphia this rule was typically off by ±{Math.round(data.model?.ppsfError ?? 25)}%.</p>}
-      <p className="muted lc-small">{c.sold?.sales12 ?? 'Recorded'} sales in 12 complete months{through ? ` to ${through}` : ''}. Size only: ignores condition, lot and exact spot. {drivers}</p>
-    </div>
-  }
-  return <div className="lc-pop" role="dialog" aria-label="How the comparison is built">
-    <p className="lc-pop-title">Area median sold price {usdCompact(e.value)}</p>
-    <p className="lc-err">Ignores size and type{c.sold?.topType ? `; sales here are ${c.sold.topTypeShare ?? ''}% ${c.sold.topType.toLowerCase()}` : ''}. A rough guide only.</p>
-    <p className="muted lc-small">{c.sold?.sales12 ?? 'Recorded'} sales in 12 complete months{through ? ` to ${through}` : ''}.{c.facts.sqft ? '' : ' No floor area given, so no $/sq ft comparison.'}</p>
+    {open && <div className="lc-pop" role="dialog" aria-label="About this number">
+      {e ? <Breakdown c={c} e={e} city={city} /> : <p>{c.noEstimate ?? 'Not enough to compare.'}</p>}
+    </div>}
   </div>
 }

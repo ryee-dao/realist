@@ -87,8 +87,8 @@ export default function App() {
         <div className="side-more" id="side-more">
           <div className="side-label">Research</div>
           <nav className="side-group" aria-label="Research">{RESEARCH.map(item)}</nav>
-          <div className="side-label">Site</div>
-          <nav className="side-group" aria-label="Site">{item(['pipeline', 'Data pipeline'])}{item(['about', 'About'])}</nav>
+          <div className="side-label">Engine</div>
+          <nav className="side-group" aria-label="Engine">{item(['pipeline', 'Data pipeline'])}{item(['about', 'About'])}</nav>
           <div className="side-foot">
           {last && (
             <a className="status" href="#/pipeline">

@@ -15,6 +15,11 @@ Two layers, both written to ``<output>/<city>/listing-tags.json`` (a compact fil
    leave-one-out city centroid, as a within-city percentile); near-duplicate descriptions on other
    homes, and the share of a description made of boilerplate sentences that recur across homes.
 
+Scheduling and backends: see README "Listing tags". In short, ``decide_mode`` picks normal / slow / stop from rate-limit
+events the CLI emits (if any) or this tagger's own usage ledger; ``slow_mode_priority`` ranks homes in slow mode;
+``assign_backend`` sends a stable ``--codex-share`` of listings to ``CodexCLI``; ``run_compare`` / ``compare_report``
+compare the two backends on the same listings without publishing anything.
+
 2. Photo + description tags, Philadelphia only for now (``PHOTO_CITIES``). Runs the Claude Code CLI
    in print mode (``claude -p``), so it uses whatever login the CLI has: the owner's Claude plan locally,
    or ``CLAUDE_CODE_OAUTH_TOKEN`` (from ``claude setup-token``) in CI. No API key is used; the child
@@ -776,6 +781,10 @@ _SENSITIVE = re.compile(r"\b(?:neighbou?rhoods?|safe|safety|unsafe|crime|residen
 class UsageLimit(RuntimeError):
     """The CLI reported a plan usage limit or rate limit; stop and resume next run."""
 
+    def __init__(self, message="usage limit", resets_at=None):
+        super().__init__(message)
+        self.resets_at = resets_at
+
 
 class BackendUnavailable(RuntimeError):
     """No usable CLI or login; photo tagging is skipped."""
@@ -842,29 +851,75 @@ _CHILD_ENV_DROP = {"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDECODE", "C
                    "CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_CHILD_SESSION", "CLAUDE_CODE_MESSAGING_SOCKET",
                    "CLAUDE_CODE_MESSAGING_TOKEN", "CLAUDE_CODE_BRIDGE_SESSION_ID", "CLAUDE_PID",
                    "CLAUDE_CODE_SESSION_ATTENDED", "CLAUDE_CODE_CHILD_NOTES_DIR", "CLAUDE_EFFORT"}
-_LIMIT_TEXT = re.compile(r"usage limit|rate limit|limit reached|limit will reset|resets? at|too many requests|overloaded|quota", re.I)
-_AUTH_TEXT = re.compile(r"not logged in|please run /login|invalid api key|authentication|oauth token|login expired|credential", re.I)
+_LIMIT_TEXT = re.compile(r"usage limit|rate limit|limit reached|limit will reset|resets? at|too many requests|overloaded|quota|"
+                         r"hit your (?:session|weekly|opus|sonnet)? ?limit|session limit|weekly limit", re.I)
+_AUTH_TEXT = re.compile(r"not logged in|please run /login|invalid api key|authentication|oauth token|login expired|credential|"
+                        r"refresh token|unauthori[sz]ed|token (?:has )?expired|(?:sign|log) ?in again|\b401\b", re.I)
+
+
+def _limit_reset(message):
+    """Epoch seconds a usage-limit message says the limit resets at ("...|1764000000"), or None."""
+    m = re.search(r"\|(\d{10})\b", message or "")
+    return int(m.group(1)) if m else None
 
 
 class ClaudeCLI:
-    """Photo tagger backend: one ``claude -p`` call, Read tool only, inside the photo directory."""
+    """Photo tagger backend: one ``claude -p`` call, Read tool only, inside the photo directory.
 
-    def __init__(self, model=DEFAULT_MODEL, binary="claude", timeout=CLI_TIMEOUT, effort=None, run=subprocess.run):
+    With ``output="stream-json"`` (the default) the run's JSON Lines are read: the final ``result`` line is the same
+    object ``--output-format json`` prints, and any ``rate_limit_event`` lines are kept as ``rate_limits``. The Agent
+    SDK documents that event (utilization 0-1, rate limit type five_hour / seven_day, resets at); the CLI docs do not
+    say ``-p`` emits it, so it is used when present and the self-kept ledger is the fallback.
+    """
+    name = "claude"
+
+    def __init__(self, model=DEFAULT_MODEL, binary="claude", timeout=CLI_TIMEOUT, effort=None, run=subprocess.run,
+                 output="stream-json"):
         self.model, self.binary, self.timeout, self.effort, self.run = model, binary, timeout, effort, run
+        self.output = output
+
+    def available(self):
+        return bool(shutil.which(self.binary))
 
     def command(self):
-        cmd = [self.binary, "-p", "--model", self.model, "--output-format", "json",
+        cmd = [self.binary, "-p", "--model", self.model, "--output-format", self.output,
                "--json-schema", json.dumps(SCHEMA, separators=(",", ":")), "--system-prompt", INSTRUCTIONS,
                "--tools", "Read", "--allowedTools", "Read", "--permission-mode", "dontAsk",
                "--permission-prompts", "none", "--restricted", "--safe-mode", "--strict-mcp-config",
                "--disable-slash-commands", "--no-session-persistence", "--max-turns", "8"]
+        if self.output == "stream-json":
+            cmd.append("--verbose")   # print mode needs --verbose for stream-json
         if self.effort:
             cmd += ["--effort", self.effort]
         return cmd
 
-    def tag(self, prompt, workdir):
-        """Raw result object from the CLI (``structured_output``, ``usage``, ``duration_ms``, ...)."""
-        if not shutil.which(self.binary):
+    @staticmethod
+    def parse(stdout):
+        """(result object, rate-limit infos) from json or stream-json output."""
+        text = (stdout or "").strip()
+        try:
+            out = json.loads(text)
+            if isinstance(out, dict):
+                return out, []
+        except ValueError:
+            pass
+        result, limits = None, []
+        for line in text.splitlines():
+            try:
+                event = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(event, dict):
+                continue
+            if event.get("type") == "result":
+                result = event
+            elif event.get("type") == "rate_limit_event" and isinstance(event.get("rate_limit_info"), dict):
+                limits.append(event["rate_limit_info"])
+        return result, limits
+
+    def tag(self, prompt, workdir, files=None):
+        """Raw result object from the CLI (``structured_output``, ``usage``, ``duration_ms``, ``rate_limits``...)."""
+        if not self.available():
             raise BackendUnavailable(f"`{self.binary}` not found; install Claude Code (npm install -g @anthropic-ai/claude-code)")
         env = {k: v for k, v in os.environ.items() if k not in _CHILD_ENV_DROP}
         try:
@@ -872,20 +927,103 @@ class ClaudeCLI:
                             env=env, timeout=self.timeout)
         except subprocess.TimeoutExpired as exc:
             raise ValueError(f"claude -p timed out after {self.timeout}s") from exc
-        try:
-            out = json.loads(proc.stdout)
-        except ValueError:
-            out = {"is_error": True, "result": (proc.stdout or proc.stderr or "")[-500:]}
+        out, limits = self.parse(proc.stdout)
         if not isinstance(out, dict):
-            raise ValueError("unexpected CLI output")
-        if out.get("is_error") or proc.returncode:
+            out = {"is_error": True, "result": (proc.stdout or proc.stderr or "")[-500:]}
+        out["rate_limits"] = limits
+        rejected = [x for x in limits if x.get("status") == "rejected"]
+        if out.get("is_error") or proc.returncode or rejected:
             message = str(out.get("result") or proc.stderr or "")[-500:]
-            if out.get("api_error_status") == 429 or _LIMIT_TEXT.search(message):
-                raise UsageLimit(message.strip() or "usage limit")
+            if out.get("api_error_status") == 429 or _LIMIT_TEXT.search(message) or rejected:
+                reset = _limit_reset(message) or next((x.get("resetsAt") or x.get("resets_at") for x in rejected), None)
+                raise UsageLimit(message.strip() or "usage limit", reset)
             if out.get("api_error_status") in (401, 403) or _AUTH_TEXT.search(message):
                 raise BackendUnavailable(message.strip() or "not logged in")
             raise ValueError(f"claude -p failed: {message.strip() or out.get('subtype')}")
         return out
+
+
+CODEX_NOTE = ("The photos are attached to this message as images, in the order of the list below (photo-0 first). "
+              "They are also files in the working directory; you do not need to run any command.")
+
+
+class CodexCLI:
+    """Second photo tagger backend: ``codex exec`` with the photos attached as images (``-i``), the same instructions,
+    the same JSON schema (``--output-schema``) and the same strict validation. Read-only sandbox, no session saved,
+    no user config (auth still comes from CODEX_HOME or CODEX_API_KEY). Token usage comes from the ``turn.completed``
+    event of ``--json``; the final message is read from ``-o``."""
+    name = "codex"
+
+    def __init__(self, model=None, binary="codex", timeout=CLI_TIMEOUT, run=subprocess.run):
+        self.model, self.binary, self.timeout, self.run = model, binary, timeout, run
+
+    def available(self):
+        """Installed, and either CODEX_API_KEY is set or `codex login status` succeeds."""
+        if not shutil.which(self.binary):
+            return False
+        if os.environ.get("CODEX_API_KEY"):
+            return True
+        try:
+            return self.run([self.binary, "login", "status"], capture_output=True, text=True, timeout=30).returncode == 0
+        except (OSError, subprocess.SubprocessError):
+            return False
+
+    def command(self, workdir, files, schema_path, out_path):
+        cmd = [self.binary, "exec", "--json", "--sandbox", "read-only", "--skip-git-repo-check", "--ephemeral",
+               "--ignore-user-config", "--ignore-rules", "--color", "never", "-C", str(workdir),
+               "--output-schema", str(schema_path), "-o", str(out_path)]
+        if os.environ.get("REALIST_CODEX_AUTH_FILE"):
+            # CI: the ChatGPT login is a file in CODEX_HOME. --ignore-user-config skips config.toml, so the
+            # file-backed credential store is set here as well.
+            cmd += ["-c", 'cli_auth_credentials_store="file"']
+        if self.model:
+            cmd += ["-m", self.model]
+        # --image=<file> takes exactly one value; a bare "-i a b" is variadic and would swallow the "-" below
+        cmd += [f"--image={Path(workdir, name)}" for name in files or []]
+        return cmd + ["-"]   # prompt from stdin
+
+    def tag(self, prompt, workdir, files=None):
+        if not shutil.which(self.binary):
+            raise BackendUnavailable(f"`{self.binary}` not found")
+        files = files or sorted(f for f in os.listdir(workdir) if f.startswith("photo-"))
+        with tempfile.TemporaryDirectory(prefix="realist-codex-") as scratch:
+            schema_path, out_path = Path(scratch, "schema.json"), Path(scratch, "last.json")
+            schema_path.write_text(json.dumps(SCHEMA))
+            env = {k: v for k, v in os.environ.items() if k not in _CHILD_ENV_DROP}
+            text = INSTRUCTIONS.replace("Read every photo file named in the message with the Read tool, then return",
+                                        "Look at every attached photo, then return") + "\n\n" + CODEX_NOTE + "\n\n" + prompt
+            try:
+                proc = self.run(self.command(workdir, files, schema_path, out_path), input=text, capture_output=True,
+                                text=True, cwd=scratch, env=env, timeout=self.timeout)
+            except subprocess.TimeoutExpired as exc:
+                raise ValueError(f"codex exec timed out after {self.timeout}s") from exc
+            usage, errors = {}, []
+            for line in (proc.stdout or "").splitlines():
+                try:
+                    event = json.loads(line)
+                except ValueError:
+                    continue
+                if not isinstance(event, dict):
+                    continue
+                if event.get("type") == "turn.completed" and isinstance(event.get("usage"), dict):
+                    u = event["usage"]
+                    usage = {"input_tokens": u.get("input_tokens", 0), "output_tokens": u.get("output_tokens", 0),
+                             "cache_read_input_tokens": u.get("cached_input_tokens", 0), "cache_creation_input_tokens": 0}
+                elif event.get("type") in ("turn.failed", "error"):
+                    errors.append(json.dumps(event)[:500])
+            message = " ".join(errors) or (proc.stderr or "")[-500:]
+            if errors or proc.returncode:
+                if _LIMIT_TEXT.search(message):
+                    raise UsageLimit(message.strip() or "codex usage limit", _limit_reset(message))
+                if _AUTH_TEXT.search(message) or "401" in message:
+                    raise BackendUnavailable(message.strip() or "codex not logged in")
+                raise ValueError(f"codex exec failed: {message.strip()[:300]}")
+            try:
+                structured = json.loads(out_path.read_text())
+            except (OSError, ValueError):
+                return {"usage": usage, "modelUsage": {self.model or "codex-default": {}}}
+        return {"structured_output": structured, "usage": usage, "total_cost_usd": None,
+                "modelUsage": {self.model or "codex-default": {}}, "rate_limits": []}
 
 
 def _confidence(value):
@@ -1392,7 +1530,7 @@ def analyse_photos(row, backend, k, loader=download_image, crop_dir=None, croppe
     full photos are deleted on return."""
     positions = choose_photos(row.get("photos") or [], k)
     started = time.monotonic()
-    usage, cost, served, calls = Counter(), 0.0, set(), 0
+    usage, cost, served, calls, limits = Counter(), 0.0, set(), 0, {}
     with tempfile.TemporaryDirectory(prefix="realist-photos-") as workdir:
         files = []
         for pos in positions:
@@ -1409,7 +1547,7 @@ def analyse_photos(row, backend, k, loader=download_image, crop_dir=None, croppe
         parts = []
         for start in range(0, len(files), per_call):
             batch = [(i - start, name, pos) for i, name, pos in files[start:start + per_call]]
-            out = backend.tag(build_prompt(row, batch), workdir)
+            out = backend.tag(build_prompt(row, batch), workdir, [name for _, name, _ in batch])
             calls += 1
             if "structured_output" not in out:
                 raise ValueError("no structured output (the model may have declined)")
@@ -1418,6 +1556,8 @@ def analyse_photos(row, backend, k, loader=download_image, crop_dir=None, croppe
                           ("input_tokens", "output_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")})
             cost += out.get("total_cost_usd") or 0
             served.update((out.get("modelUsage") or {}).keys())
+            for info in out.get("rate_limits") or []:
+                limits[str(info.get("rate_limit_type") or info.get("rateLimitType") or "unknown")] = info
         tags = merge_tags(parts)
         if crop_dir and cropper is not None and not crops_disabled(row.get("source")):
             make_crops(workdir, files, tags, crop_dir, cropper, crop_confidence)
@@ -1427,7 +1567,8 @@ def analyse_photos(row, backend, k, loader=download_image, crop_dir=None, croppe
     return {"positions": used, "photoUrls": [row["photos"][p] for p in used], "tags": tags, "calls": calls,
             "url": row["url"], "address": row.get("address"), "date": row.get("date"), "price": row.get("price"),
             "source": row.get("source"), "usage": dict(usage), "apiEquivalentUsd": round(cost, 6),
-            "seconds": round(time.monotonic() - started, 1), "servedBy": sorted(served)}
+            "seconds": round(time.monotonic() - started, 1), "servedBy": sorted(served),
+            "backend": getattr(backend, "name", "claude"), "rateLimits": limits}
 
 
 def record_valid(record, subject):
@@ -1593,9 +1734,243 @@ def _compact_photo(record, city, site_crops, facts=None, gallery_count=None, des
     }
 
 
+# ---------------------------------------------------------------------------- scheduling: usage, mode, backends
+
+SLOW_LIMIT = 5                    # listings per run in slow mode
+SLOW_5H, SLOW_7D = 0.60, 0.50     # slow down at 60% of the 5-hour or 50% of the weekly limit (or budget)
+BUDGET_5H_USD = 1.00              # stand-in budgets for the ledger estimate, in the CLI's API-equivalent dollars;
+BUDGET_7D_USD = 10.00             # calibrate against /usage: they only count this tagger's own runs
+COOL_DOWN_HOURS = 5               # after a usage-limit stop with no reset time, wait this long
+SLOW_MAX_VS_PCT = -10             # slow mode with estimates: asking at least 10% under the estimate
+DEFAULT_CODEX_SHARE = 0.2
+
+
+def ledger_read(path, now, days=8):
+    entries = []
+    try:
+        lines = Path(path).read_text().splitlines()
+    except OSError:
+        return entries
+    cutoff = (now - timedelta(days=days)).isoformat()
+    for line in lines:
+        try:
+            e = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(e, dict) and str(e.get("at", "")) >= cutoff:
+            entries.append(e)
+    return entries
+
+
+def ledger_append(path, entry, now):
+    """Append one entry and drop entries older than 8 days, so the file stays small."""
+    keep = ledger_read(path, now) + [entry]
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    with NamedTemporaryFile("w", dir=Path(path).parent, delete=False) as tmp:
+        tmp.write("".join(json.dumps(e, separators=(",", ":")) + "\n" for e in keep))
+    os.replace(tmp.name, path)
+
+
+def ledger_window(entries, now, hours, backend="claude"):
+    """Calls, API-equivalent dollars and tokens this tagger spent with ``backend`` in the last ``hours``."""
+    cutoff = (now - timedelta(hours=hours)).isoformat()
+    rows = [e for e in entries if e.get("backend", "claude") == backend and str(e.get("at", "")) >= cutoff]
+    return {"calls": sum(e.get("calls", 0) for e in rows), "usd": round(sum(e.get("usd") or 0 for e in rows), 4),
+            "tokens": sum((e.get("input") or 0) + (e.get("output") or 0) for e in rows), "listings": len(rows)}
+
+
+def _utilization(info):
+    value = info.get("utilization", info.get("used_percentage"))
+    if type(value) not in (int, float):
+        return None
+    return value / 100 if value > 1 else value
+
+
+def decide_mode(entries, now, budget_5h=BUDGET_5H_USD, budget_7d=BUDGET_7D_USD, backend="claude"):
+    """("normal" | "slow" | "stop", reason).
+
+    1. stop: a usage-limit stop is still cooling down (its reset time, or COOL_DOWN_HOURS when none was given).
+    2. Plan usage reported by the CLI (rate-limit events from the last 5 hours, when the CLI emits them): slow at
+       SLOW_5H of the 5-hour limit or SLOW_7D of the weekly limit.
+    3. Otherwise this tagger's own spend in the ledger against the stand-in budgets, same thresholds. That is an
+       estimate of our usage only: the owner's own Claude use on the same plan is not in it.
+    """
+    mine = [e for e in entries if e.get("backend", "claude") == backend]
+    for e in reversed(mine):
+        if e.get("limitHit"):
+            at = datetime.fromisoformat(e["at"])
+            until = (datetime.fromtimestamp(e["resetsAt"], timezone.utc) if e.get("resetsAt")
+                     else at + timedelta(hours=COOL_DOWN_HOURS))
+            if until > now:
+                return "stop", f"usage limit hit at {e['at'][:16]}Z; cooling down until {until.isoformat()[:16]}Z"
+            break
+    recent = (now - timedelta(hours=5)).isoformat()
+    reported = {}
+    for e in mine:
+        if str(e.get("at", "")) >= recent:
+            reported.update(e.get("rateLimits") or {})
+    u5, u7 = _utilization(reported.get("five_hour", {})), _utilization(reported.get("seven_day", {}))
+    if u5 is not None or u7 is not None:
+        if (u5 or 0) >= SLOW_5H or (u7 or 0) >= SLOW_7D:
+            return "slow", f"plan usage reported by the CLI: 5-hour {100 * (u5 or 0):.0f}%, weekly {100 * (u7 or 0):.0f}%"
+        return "normal", f"plan usage reported by the CLI: 5-hour {100 * (u5 or 0):.0f}%, weekly {100 * (u7 or 0):.0f}%"
+    w5, w7 = ledger_window(mine, now, 5, backend), ledger_window(mine, now, 24 * 7, backend)
+    share5 = w5["usd"] / budget_5h if budget_5h else 0
+    share7 = w7["usd"] / budget_7d if budget_7d else 0
+    reason = (f"estimate of this tagger's own usage: ${w5['usd']:.2f} of ${budget_5h:.2f} in 5 hours, "
+              f"${w7['usd']:.2f} of ${budget_7d:.2f} in 7 days")
+    return ("slow" if share5 >= SLOW_5H or share7 >= SLOW_7D else "normal"), reason
+
+
+def slow_mode_priority(home, card):
+    """Rank for slow mode, or None to skip the home. Lower ranks first.
+
+    Interpretation of "only those with high price estimates": homes asking furthest below their estimate
+    (listing-cards ``estimate.vsPct``, at most SLOW_MAX_VS_PCT), then homes with no estimate but distress wording.
+    Change this one function to change the rule.
+    """
+    vs = ((card or {}).get("estimate") or {}).get("vsPct")
+    if type(vs) in (int, float):
+        if vs <= SLOW_MAX_VS_PCT:
+            return (0, vs), f"asking {abs(vs):.0f}% below its estimate"
+        return None
+    flags = [s for s in DISTRESS_SIGNALS if s in text_signals(text_of(home))]
+    if flags:
+        return (1, -len(flags)), "no estimate; text: " + ", ".join(flags)
+    return None
+
+
+def load_cards(path):
+    """url -> card from a listing-cards.json, for slow-mode ranking. Empty when the file is missing."""
+    doc = _read_json(path) or {}
+    cards = {}
+    for c in doc.get("cards") or []:
+        if isinstance(c, dict):
+            for u in [c.get("url")] + list(c.get("urls") or []) + [s.get("url") for s in c.get("sources") or []
+                                                                  if isinstance(s, dict)]:
+                if u:
+                    cards.setdefault(u, c)
+    return cards
+
+
+def assign_backend(url, codex_share):
+    """'codex' for a stable ~codex_share of listings (by a hash of the listing URL), else 'claude'."""
+    if not codex_share:
+        return "claude"
+    bucket = int(hashlib.sha256(url.encode()).hexdigest()[:8], 16) / 0xFFFFFFFF
+    return "codex" if bucket < codex_share else "claude"
+
+
+def backend_model(backend):
+    if getattr(backend, "name", "claude") == "codex":
+        return backend.model or "codex-default"
+    return getattr(backend, "model", DEFAULT_MODEL)
+
+
+# ---------------------------------------------------------------------------- backend comparison (not published)
+
+def run_compare(root, city, backends, n, *, k=PHOTOS_PER_LISTING, per_call=PHOTOS_PER_CALL, cache_dir=None,
+                listings_root=None, loader=download_image, now=None, log=print):
+    """Send ``n`` listings already tagged by one backend (current prompt version) to the other backend as well, and
+    store both results side by side in ``<cache_dir>/comparisons/<city>.json``. No crops; nothing goes to the site."""
+    root, now = Path(root), now or datetime.now(timezone.utc)
+    cache_dir = Path(cache_dir or root / "analysis")
+    cache = (_read_json(cache_dir / f"{city}.json") or {}).get("results", {})
+    path = cache_dir / "comparisons" / f"{city}.json"
+    store = (_read_json(path) or {}).get("pairs", {})
+    homes = {u: h for h in load_listings(listings_root or root, city) for u in (h.get("urls") or [h["url"]])}
+    done = 0
+    for url, record in sorted(cache.items(), key=lambda kv: kv[1].get("analysedAt") or "", reverse=True):
+        if done >= n:
+            break
+        primary = record.get("backend", "claude")
+        other = "codex" if primary == "claude" else "claude"
+        if record.get("promptVersion") != PROMPT_VERSION or backends.get(other) is None or url not in homes:
+            continue
+        entry = store.setdefault(url, {"address": record.get("address"), "results": {}, "errors": {}})
+        if other in entry["results"] or other in entry["errors"]:
+            continue
+        subject = photo_subject(homes[url])
+        if not record_valid(record, subject):
+            continue
+        entry["results"][primary] = _comparison_view(record)
+        log(f"{city}: compare {record.get('address')} ({primary} -> {other}) ...")
+        try:
+            other_record = analyse_photos(subject, backends[other], k, loader, None, None, per_call)
+            other_record.update(model=backend_model(backends[other]), promptVersion=PROMPT_VERSION,
+                                analysedAt=now.isoformat())
+            entry["results"][other] = _comparison_view(other_record)
+        except (UsageLimit, BackendUnavailable) as exc:
+            entry["errors"][other] = str(exc)[:200]
+            log(f"{city}: {other} stopped the comparison: {exc}")
+            break
+        except (ValueError, OSError) as exc:
+            entry["errors"][other] = str(exc)[:200]
+        done += 1
+    _write(path, {"version": 1, "pairs": store})
+    return store
+
+
+def _comparison_view(record):
+    tags = {k_: v for k_, v in record["tags"].items()}
+    tags["defects"] = [{k_: v for k_, v in d.items() if k_ != "crop"} for d in tags.get("defects") or []]
+    return {"backend": record.get("backend", "claude"), "model": record.get("model"), "servedBy": record.get("servedBy"),
+            "promptVersion": record.get("promptVersion"), "analysedAt": record.get("analysedAt"),
+            "seconds": record.get("seconds"), "usage": record.get("usage"), "facts": record.get("facts") or {},
+            "tags": tags}
+
+
+def compare_report(cache_dir, city):
+    """Agreement between backends over stored comparison pairs: dict with condition match rate, defect types found
+    by only one side, mean absolute score difference, seconds and failures per backend."""
+    pairs = ((_read_json(Path(cache_dir) / "comparisons" / f"{city}.json") or {}).get("pairs") or {})
+    out = {"pairs": 0, "conditionMatch": 0, "onlyIn": {"claude": Counter(), "codex": Counter()}, "scoreDiffs": [],
+           "seconds": {"claude": [], "codex": []}, "failures": Counter(), "findings": {"claude": [], "codex": []}}
+    for entry in pairs.values():
+        for backend in entry.get("errors") or {}:
+            out["failures"][backend] += 1
+        res = entry.get("results") or {}
+        if "claude" not in res or "codex" not in res:
+            continue
+        out["pairs"] += 1
+        a, b = res["claude"], res["codex"]
+        out["conditionMatch"] += a["tags"]["condition"]["value"] == b["tags"]["condition"]["value"]
+        ta = {d["type"] for d in a["tags"]["defects"] if d["confidence"] >= MEANINGFUL_DEFECT}
+        tb = {d["type"] for d in b["tags"]["defects"] if d["confidence"] >= MEANINGFUL_DEFECT}
+        out["onlyIn"]["claude"].update(ta - tb)
+        out["onlyIn"]["codex"].update(tb - ta)
+        sa, sb = condition_score(a["tags"], None, a.get("facts")), condition_score(b["tags"], None, b.get("facts"))
+        if sa is not None and sb is not None:
+            out["scoreDiffs"].append(sb - sa)
+        for name, r in (("claude", a), ("codex", b)):
+            if r.get("seconds") is not None:
+                out["seconds"][name].append(r["seconds"])
+            out["findings"][name].append(sum(f["rooms"] for f in group_findings(r["tags"], r.get("facts"))))
+    return out
+
+
+def format_compare_report(rep, city):
+    n = rep["pairs"]
+    mean = lambda xs: sum(xs) / len(xs) if xs else float("nan")
+    lines = [f"{city}: {n} listings tagged by both backends"]
+    if n:
+        lines.append(f"  condition agrees on {rep['conditionMatch']} of {n} ({100 * rep['conditionMatch'] / n:.0f}%)")
+        diffs = rep["scoreDiffs"]
+        lines.append(f"  score, codex minus claude: mean {mean(diffs):+.1f}, mean absolute {mean([abs(d) for d in diffs]):.1f}")
+        for name in ("claude", "codex"):
+            only = ", ".join(f"{t} {c}" for t, c in rep["onlyIn"][name].most_common()) or "none"
+            lines.append(f"  defect types (confidence >= {MEANINGFUL_DEFECT}) only {name} found: {only}")
+            lines.append(f"  {name}: {mean(rep['seconds'][name]):.0f} s per listing, "
+                         f"{mean(rep['findings'][name]):.1f} findings per listing")
+    lines.append(f"  failures: {dict(rep['failures']) or 'none'}")
+    return "\n".join(lines)
+
+
 def analyse_city(root, city, *, backend=None, model=DEFAULT_MODEL, limit=20, max_calls=40, k=PHOTOS_PER_LISTING,
                  per_call=PHOTOS_PER_CALL, cache_dir=None, history=True, dry_run=False, loader=download_image,
-                 cropper="auto", crop_confidence=CROP_MIN_CONFIDENCE, urls=None, now=None, log=print):
+                 cropper="auto", crop_confidence=CROP_MIN_CONFIDENCE, urls=None, now=None, log=print,
+                 codex=None, codex_share=0.0, listings_root=None, cards=None, slow_limit=SLOW_LIMIT,
+                 budget_5h=BUDGET_5H_USD, budget_7d=BUDGET_7D_USD, force_mode=None):
     """Text signals for every listing; photo tags and defect crops (Philadelphia only) through ``backend``.
 
     Returns (document, report). Unless dry_run, writes ``<root>/<city>/listing-tags.json``, the photo-tag cache
@@ -1604,7 +1979,7 @@ def analyse_city(root, city, *, backend=None, model=DEFAULT_MODEL, limit=20, max
     """
     root = Path(root)
     now = now or datetime.now(timezone.utc)
-    homes = load_listings(root, city)
+    homes = load_listings(listings_root or root, city)
     areas = AreaIndex(_read_json(root / city / "areas.json"), _read_json(root / city / "overview.json"),
                       _read_json(root / city / "sales.json"), city)
     cache_dir = Path(cache_dir or root / "analysis")
@@ -1615,52 +1990,90 @@ def analyse_city(root, city, *, backend=None, model=DEFAULT_MODEL, limit=20, max
     desc = description_stats(docs)
 
     report = {"planned": [], "results": [], "tagged": 0, "failed": 0, "calls": 0, "stopped": None, "usage": Counter(),
-              "apiEquivalentUsd": 0.0, "seconds": [], "crops": 0}
+              "apiEquivalentUsd": 0.0, "seconds": [], "crops": 0, "mode": None, "modeReason": None,
+              "byBackend": Counter()}
+    ledger_path = cache_dir / "usage-ledger.jsonl"
     if city in PHOTO_CITIES and (backend is not None or dry_run):
+        mode, why = decide_mode(ledger_read(ledger_path, now), now, budget_5h, budget_7d)
+        if force_mode:
+            mode, why = force_mode, f"forced with --mode {force_mode}"
+        report["mode"], report["modeReason"] = mode, why
+        log(f"{city}: photo tagging mode {mode} ({why})")
+        if mode == "stop" and not urls:
+            report["stopped"] = why
+        if mode == "slow":
+            limit = min(limit, slow_limit)
+        cards = cards if cards is not None else load_cards(root / city / "listing-cards.json")
+        backends = {"claude": backend, "codex": codex}
         if cropper == "auto":
             cropper = load_cropper()
             if cropper is None and not dry_run:
                 log(f"{city}: neither Pillow nor ImageMagick is available; photo tags are kept, defect crops skipped")
         queue = []
-        for home in homes:
+        for home in homes if report["stopped"] is None else []:
             subject = photo_subject(home)
             if len(subject["photos"]) < MIN_PHOTOS:
                 continue
             requested = bool(urls) and bool(set(urls) & set(home.get("urls") or [home["url"]]))
             if urls and not requested:
                 continue
+            chosen = assign_backend(home["url"], codex_share if (codex is not None or dry_run) else 0)
+            model_for = backend_model(backends[chosen]) if backends.get(chosen) else model
             old = cache.get(home["url"])
-            current = record_valid(old, subject) and old.get("model", model) == model
+            current = record_valid(old, subject) and old.get("model", model) in (model, model_for)
             if not requested and current and old.get("promptVersion") == PROMPT_VERSION:
                 continue  # already tagged; --url re-tags on request
+            if not requested and current and mode == "slow":
+                continue  # slow mode never spends usage on re-tagging
             if not requested and current:
                 # still valid under its older prompt version: re-tagged only after everything new
                 tier, rank, reason = 4, 0, f"re-tag: tagged with {old.get('promptVersion') or 'an older prompt'}"
             else:
                 tier, rank, reason = photo_priority(home, areas.compare(home, city), requested)
-            queue.append((tier, rank, home, subject, reason))
+            if mode == "slow" and not requested:
+                slow = slow_mode_priority(home, cards.get(home["url"]) or next(
+                    (cards[u] for u in home.get("urls") or [] if u in cards), None))
+                if slow is None:
+                    continue
+                (tier, rank), reason = slow[0], "slow mode: " + slow[1]
+            queue.append((tier, rank, home, subject, reason, chosen))
         queue.sort(key=lambda q: q[2].get("date") or "", reverse=True)   # newest first within a tier
         queue.sort(key=lambda q: (q[0], q[1]))
-        for tier, rank, home, subject, reason in queue:
+        for tier, rank, home, subject, reason, chosen in queue:
+            if backends.get(chosen) is None and not dry_run:
+                chosen = "claude"
+            active = backends.get(chosen)
             needed = math.ceil(len(choose_photos(subject["photos"], k)) / per_call)
             if len(report["planned"]) >= limit or report["calls"] + needed > max_calls:
                 report["stopped"] = report["stopped"] or "run cap reached"
                 break
             report["planned"].append({"url": home["url"], "address": home.get("address"), "date": home.get("date"),
                                       "price": home.get("price"), "photos": len(subject["photos"]),
-                                      "calls": needed, "reason": reason})
+                                      "calls": needed, "reason": reason, "backend": chosen})
             if dry_run:
                 report["calls"] += needed
                 continue
             report["calls"] += needed
-            log(f"{city}: [{len(report['planned'])}] {home.get('address')} ({reason}; {needed} calls) ...")
+            log(f"{city}: [{len(report['planned'])}] {home.get('address')} ({reason}; {chosen}; {needed} calls) ...")
             try:
-                record = analyse_photos(subject, backend, k, loader, crop_store, cropper, per_call, crop_confidence)
+                record = analyse_photos(subject, active, k, loader, crop_store, cropper, per_call, crop_confidence)
             except UsageLimit as exc:
+                ledger_append(ledger_path, {"at": now.isoformat(), "backend": chosen, "calls": needed, "limitHit": True,
+                                            "resetsAt": exc.resets_at, "message": str(exc)[:200]}, now)
+                if chosen == "codex":
+                    log(f"{city}: Codex reported a usage limit; the rest of this run uses Claude ({exc})")
+                    backends["codex"] = None
+                    continue
                 report["stopped"] = f"usage limit: {exc}"
                 log(f"{city}: Claude reported a usage limit; stopping, will resume from cache next run ({exc})")
                 break
             except BackendUnavailable as exc:
+                if chosen == "codex":
+                    log(f"{city}: Codex unavailable; the rest of this run uses Claude ({exc})")
+                    if os.environ.get("GITHUB_ACTIONS"):
+                        print("::notice::Codex login expired — reseed CODEX_AUTH_JSON", flush=True)
+                    backends["codex"] = None
+                    continue
                 report["stopped"] = f"unavailable: {exc}"
                 log(f"{city}: photo tagging unavailable: {exc}")
                 break
@@ -1668,7 +2081,15 @@ def analyse_city(root, city, *, backend=None, model=DEFAULT_MODEL, limit=20, max
                 report["failed"] += 1
                 log(f"{city}: photo tagging skipped {home['url']}: {exc}")
                 continue
-            record.update(key=cache_key(subject, model), photoListingUrl=subject["photoListingUrl"], model=model,
+            u = record["usage"]
+            ledger_append(ledger_path, {"at": now.isoformat(), "backend": chosen, "calls": record["calls"],
+                                        "input": u.get("input_tokens", 0) + u.get("cache_read_input_tokens", 0)
+                                        + u.get("cache_creation_input_tokens", 0), "output": u.get("output_tokens", 0),
+                                        "usd": record.get("apiEquivalentUsd") or 0, "rateLimits": record.get("rateLimits") or {}},
+                          now)
+            report["byBackend"][chosen] += 1
+            model_used = backend_model(active)
+            record.update(key=cache_key(subject, model_used), photoListingUrl=subject["photoListingUrl"], model=model_used,
                           galleryCount=len(subject["photos"]), facts=home_facts(home, city),
                           descriptionLabel=staging_label_text(text_of(home)) or "", promptVersion=PROMPT_VERSION, analysedAt=now.isoformat(),
                           signals=text_signals(text_of(home)))
@@ -1749,7 +2170,7 @@ def _write(path, data):
     os.replace(tmp.name, path)
 
 
-def main(argv=None, make_backend=ClaudeCLI):
+def main(argv=None, make_backend=ClaudeCLI, make_codex=CodexCLI):
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--city", choices=CITY_IDS, help="one city (photo tagging runs for Philadelphia only)")
     parser.add_argument("--limit", type=int, default=20, help="maximum listings photo-tagged per run")
@@ -1774,6 +2195,23 @@ def main(argv=None, make_backend=ClaudeCLI):
                         help=f"minimum defect confidence for a crop (default {CROP_MIN_CONFIDENCE})")
     parser.add_argument("--dry-run", action="store_true",
                         help="print the photo-tagging order with reasons; call nothing, write nothing")
+    parser.add_argument("--listings", type=Path, help="where <city>/listings.json is, if not under --output")
+    parser.add_argument("--cards", type=Path, help="listing-cards.json for slow-mode ranking (default <output>/<city>/)")
+    parser.add_argument("--mode", choices=["auto", "normal", "slow"], default="auto",
+                        help="auto: slow down near the usage thresholds (default); normal or slow to force")
+    parser.add_argument("--slow-limit", type=int, default=SLOW_LIMIT, help=f"listings per run in slow mode ({SLOW_LIMIT})")
+    parser.add_argument("--budget-5h-usd", type=float, default=BUDGET_5H_USD,
+                        help="ledger stand-in for the 5-hour limit, in the CLI's API-equivalent dollars")
+    parser.add_argument("--budget-7d-usd", type=float, default=BUDGET_7D_USD, help="ledger stand-in for the weekly limit")
+    parser.add_argument("--claude-output", choices=["stream-json", "json"], default="stream-json",
+                        help="stream-json also reads rate-limit events when the CLI emits them (default)")
+    parser.add_argument("--codex-share", type=float, default=None,
+                        help=f"share of listings sent to Codex (default {DEFAULT_CODEX_SHARE} when codex is installed "
+                             "and logged in, else 0)")
+    parser.add_argument("--codex-model", help="model for codex exec (default: Codex's own default)")
+    parser.add_argument("--compare", type=int, default=0, metavar="N",
+                        help="send N already-tagged listings to the other backend too; stored side by side, not published")
+    parser.add_argument("--compare-report", action="store_true", help="print backend agreement from stored comparisons")
     args = parser.parse_args(argv)
     if args.limit < 0 or args.max_calls < 0 or not 1 <= args.k <= 60 or not 1 <= args.per_call <= 20:
         parser.error("--limit and --max-calls must be >= 0, --photos-per-listing 1-60, --photos-per-call 1-20")
@@ -1782,15 +2220,42 @@ def main(argv=None, make_backend=ClaudeCLI):
     if args.url and args.city and args.city not in PHOTO_CITIES:
         parser.error("--url photo tagging is Philadelphia-only for now")
     cities = [args.city] if args.city else CITY_IDS
+    cache_dir = args.cache_dir or args.output / "analysis"
+    if args.compare_report:
+        for city in sorted(PHOTO_CITIES & set(cities)):
+            print(format_compare_report(compare_report(cache_dir, city), city))
+        return 0
+    codex = None
+    if not (args.no_photos or args.dry_run) and PHOTO_CITIES & set(cities) and (args.codex_share != 0 or args.compare):
+        candidate = make_codex(model=args.codex_model)
+        if candidate.available():
+            codex = candidate
+        elif args.codex_share:
+            print("codex is not installed or not logged in; all photo tagging uses Claude")
+    share = (DEFAULT_CODEX_SHARE if args.codex_share is None else args.codex_share) if codex else 0
+    if args.dry_run:
+        share = args.codex_share or 0   # the plan shows which listings would go to Codex at this share
+    if not 0 <= share <= 1:
+        parser.error("--codex-share must be between 0 and 1")
+    if args.compare:
+        claude = make_backend(model=args.model, effort=args.effort)
+        backends = {"claude": claude if claude.available() else None, "codex": codex}
+        if None in backends.values():
+            parser.error("--compare needs both claude and codex installed and logged in")
+        for city in sorted(PHOTO_CITIES & set(cities)):
+            run_compare(args.output, city, backends, args.compare, k=args.k, per_call=args.per_call,
+                        cache_dir=args.cache_dir, listings_root=args.listings, log=lambda m: print(m, flush=True))
+            print(format_compare_report(compare_report(cache_dir, city), city))
+        return 0
     if args.remove_crops_source or args.remove_crops_url:
-        cache_dir = args.cache_dir or args.output / "analysis"
         for city in cities:
             n = remove_crops(cache_dir, city, args.remove_crops_source, args.remove_crops_url)
             print(f"{city}: removed {n} crops; they will not be re-created")
         args.no_photos = True  # refresh listing-tags.json (and the site's crop copies) without tagging anything
     if args.city and args.city not in PHOTO_CITIES and not args.no_photos:
         print(f"{args.city}: photo tagging is Philadelphia-only for now; writing text signals only.")
-    backend = None if (args.no_photos or args.dry_run) else make_backend(model=args.model, effort=args.effort)
+    backend = None if (args.no_photos or args.dry_run) else make_backend(model=args.model, effort=args.effort,
+                                                                         output=args.claude_output)
     for city in cities:
         if not (args.output / city).is_dir():
             print(f"{city}: no data directory, skipped")
@@ -1799,17 +2264,22 @@ def main(argv=None, make_backend=ClaudeCLI):
                                    model=args.model, limit=args.limit, max_calls=args.max_calls, k=args.k,
                                    per_call=args.per_call, cache_dir=args.cache_dir, history=args.tag_history,
                                    dry_run=args.dry_run, urls=args.url, crop_confidence=args.crop_confidence,
-                                   log=lambda message: print(message, flush=True))
+                                   log=lambda message: print(message, flush=True), codex=codex, codex_share=share,
+                                   listings_root=args.listings, cards=load_cards(args.cards) if args.cards else None,
+                                   slow_limit=args.slow_limit, budget_5h=args.budget_5h_usd, budget_7d=args.budget_7d_usd,
+                                   force_mode=None if args.mode == "auto" else args.mode)
         s = doc["summary"]
         line = (f"{city}: {s['listings']} listings, {s['withDescription']} with descriptions, "
                 f"{s['photoTagged']} photo-tagged; signals {s['signals'] or 'none'}")
         if args.dry_run and city in PHOTO_CITIES:
-            line += f"; would photo-tag {len(report['planned'])} listings in {report['calls']} calls, in this order:"
-            line += "".join(f"\n  {i}. {p['address']} ({p['date']}, ${p['price']:,.0f}, {p['photos']} photos, "
-                            f"{p['calls']} calls): {p['reason']}" for i, p in enumerate(report["planned"], 1))
+            line += (f"; mode {report['mode']} ({report['modeReason']}); would photo-tag {len(report['planned'])} "
+                     f"listings in {report['calls']} calls, in this order:")
+            line += "".join(f"\n  {i}. {p['address']} ({p['date']}, ${p['price'] or 0:,.0f}, {p['photos']} photos, "
+                            f"{p['calls']} calls, {p['backend']}): {p['reason']}" for i, p in enumerate(report["planned"], 1))
         elif report["calls"]:
             u, secs = report["usage"], report["seconds"]
-            line += (f"; this run {report['tagged']} tagged ({report['crops']} defect crops), {report['failed']} skipped, "
+            line += (f"; mode {report['mode']} ({report['modeReason']}); this run {report['tagged']} tagged "
+                     f"({dict(report['byBackend'])}; {report['crops']} defect crops), {report['failed']} skipped, "
                      f"{report['calls']} calls, "
                      f"tokens in {u.get('input_tokens', 0)} (cache write {u.get('cache_creation_input_tokens', 0)}, "
                      f"read {u.get('cache_read_input_tokens', 0)}) out {u.get('output_tokens', 0)}, "

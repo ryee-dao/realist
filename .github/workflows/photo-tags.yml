@@ -1,0 +1,177 @@
+name: Photo tags
+
+# Tags Philadelphia listing photos with Claude Code (the owner's plan, via CLAUDE_CODE_OAUTH_TOKEN), up to 20
+# listings a run, every 5 hours. engine/listing_analysis.py slows down to 5 listings near the usage thresholds and
+# stops cleanly at a usage limit; the next run resumes from the store. The analysis store, defect crops, usage
+# ledger and tag history live under listing-analysis/ on the `data` branch, next to the harvest store; the daily
+# Data pipeline publishes listing-tags.json and the crops with the site.
+#
+# Codex (optional, ~20% of listings) authenticates with the owner's ChatGPT-plan login from the CODEX_AUTH_JSON
+# secret (preferred) or an OpenAI API key in CODEX_API_KEY. The login file lives only in a CODEX_HOME under
+# RUNNER_TEMP, is never cached, uploaded, committed or printed, and is deleted at the end. Codex may refresh its
+# tokens during a run; a refreshed file is written back to the CODEX_AUTH_JSON secret with the CODEX_SECRET_WRITER
+# token (a fine-grained PAT with this repository's "Secrets: read and write"). Only schedule and manual triggers,
+# and one run at a time (concurrency below), so a single login file is used by one serialized job stream.
+on:
+  schedule:
+    - cron: "41 0,5,10,15,20 * * *"     # 00:41, 05:41, 10:41, 15:41, 20:41 UTC; listings.yml runs at :23
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: "Listings per run in normal mode"
+        default: "20"
+      mode:
+        description: "auto, normal or slow"
+        default: "auto"
+
+permissions:
+  contents: write     # push listing-analysis/ to the data branch
+  pages: read         # find the deployed site, to read its area figures and listing cards
+
+concurrency:
+  group: photo-tags
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      claude: ${{ steps.secrets.outputs.claude }}
+      codex: ${{ steps.secrets.outputs.codex }}       # file, key or none
+    steps:
+      - id: secrets
+        env:
+          CLAUDE_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          CODEX_KEY: ${{ secrets.CODEX_API_KEY }}
+          CODEX_AUTH: ${{ secrets.CODEX_AUTH_JSON }}
+        run: |
+          if [ -n "$CLAUDE_TOKEN" ]; then echo "claude=true" >> "$GITHUB_OUTPUT"; else
+            echo "claude=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::CLAUDE_CODE_OAUTH_TOKEN is not set; photo tagging skipped."
+          fi
+          if [ -n "$CODEX_AUTH" ]; then echo "codex=file" >> "$GITHUB_OUTPUT"
+          elif [ -n "$CODEX_KEY" ]; then echo "codex=key" >> "$GITHUB_OUTPUT"
+          else echo "codex=none" >> "$GITHUB_OUTPUT"; fi
+
+  tag:
+    needs: check
+    if: needs.check.outputs.claude == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 110
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check out the data branch
+        run: |
+          if git ls-remote --exit-code --heads origin data >/dev/null; then
+            git clone --depth 1 --branch data "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" store
+          else
+            mkdir store && cd store && git init -q -b data
+            git remote add origin "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git"
+          fi
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install Claude Code, Pillow (crops) and, if configured, Codex
+        run: |
+          npm install -g @anthropic-ai/claude-code@latest
+          pip install pillow || echo "::warning::Pillow not installed; ImageMagick is used for crops if present"
+          if [ "${{ needs.check.outputs.codex }}" != "none" ]; then npm install -g @openai/codex@latest; fi
+          claude --version
+
+      - uses: actions/cache/restore@v4
+        with:
+          path: harvested-listings
+          key: listings-v1-photos-${{ github.run_id }}
+          restore-keys: listings-v1-
+
+      # Area figures and listing cards (with estimates, for slow-mode ranking) from the deployed site. Without them
+      # the tagger still runs; it ranks by description signals and has no estimates.
+      - name: Fetch the site's area figures and listing cards
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p photo-data/philadelphia
+          base=$(gh api "repos/${{ github.repository }}/pages" --jq .html_url 2>/dev/null || true)
+          for f in areas.json overview.json sales.json listing-cards.json; do
+            if [ -z "$base" ] || ! curl -fsSL "${base%/}/data/philadelphia/$f" -o "photo-data/philadelphia/$f"; then
+              echo "::warning::Could not fetch $f from the deployed site"; rm -f "photo-data/philadelphia/$f"
+            fi
+          done
+          test -s harvested-listings/philadelphia/listings.json || echo "::warning::No merged Philadelphia listings in the cache"
+
+      # Seed the ChatGPT-plan login into a private CODEX_HOME (only if the file is absent), without echoing it.
+      - name: Prepare the Codex login
+        if: needs.check.outputs.codex == 'file'
+        env:
+          CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}
+        run: |
+          home="$RUNNER_TEMP/codex-home"
+          echo "CODEX_HOME=$home" >> "$GITHUB_ENV"
+          mkdir -p "$home" && chmod 700 "$home"
+          printf 'cli_auth_credentials_store = "file"\n' > "$home/config.toml"
+          if [ ! -f "$home/auth.json" ]; then
+            (umask 077; printf '%s' "$CODEX_AUTH_JSON" > "$home/auth.json")
+          fi
+          chmod 600 "$home/auth.json"
+          sha256sum "$home/auth.json" | cut -d' ' -f1 > "$RUNNER_TEMP/codex-auth.sha256"
+          if ! jq -e '.auth_mode == "chatgpt" and ((.tokens.refresh_token // "") | length > 0)' "$home/auth.json" >/dev/null 2>&1; then
+            echo "::warning::CODEX_AUTH_JSON does not look like a ChatGPT login with a refresh token; Codex may fail"
+          fi
+
+      - name: Tag photos
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # the API key only when there is no ChatGPT login to use (an API key would take over from auth.json)
+          CODEX_API_KEY: ${{ needs.check.outputs.codex == 'key' && secrets.CODEX_API_KEY || '' }}
+          REALIST_CODEX_AUTH_FILE: ${{ needs.check.outputs.codex == 'file' && '1' || '' }}
+        run: |
+          share=0
+          if [ "${{ needs.check.outputs.codex }}" != "none" ]; then share=0.2; fi
+          python -m engine.listing_analysis --city philadelphia --output photo-data --listings harvested-listings \
+            --cache-dir store/listing-analysis --limit "${{ inputs.limit || '20' }}" --mode "${{ inputs.mode || 'auto' }}" \
+            --codex-share "$share"
+
+      # Codex can refresh its tokens in any run; the refreshed file must replace the secret or the next run breaks.
+      - name: Save a refreshed Codex login back to its secret
+        if: always() && needs.check.outputs.codex == 'file'
+        env:
+          WRITER: ${{ secrets.CODEX_SECRET_WRITER }}
+        run: |
+          file="$RUNNER_TEMP/codex-home/auth.json"
+          [ -f "$file" ] || exit 0
+          if [ "$(sha256sum "$file" | cut -d' ' -f1)" = "$(cat "$RUNNER_TEMP/codex-auth.sha256" 2>/dev/null)" ]; then
+            echo "Codex login unchanged."
+          elif [ -n "$WRITER" ]; then
+            GH_TOKEN="$WRITER" gh secret set CODEX_AUTH_JSON --repo "$GITHUB_REPOSITORY" < "$file" \
+              && echo "Saved the refreshed Codex login to CODEX_AUTH_JSON." \
+              || echo "::warning::Could not save the refreshed Codex login; reseed CODEX_AUTH_JSON if Codex fails next run."
+          else
+            echo "::warning::Codex refreshed its login, but CODEX_SECRET_WRITER is not set, so the refreshed tokens could not be saved. Reseed CODEX_AUTH_JSON if Codex fails next run."
+          fi
+
+      - name: Remove the Codex login from the runner
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/codex-home" "$RUNNER_TEMP/codex-auth.sha256"
+
+      - name: Save the analysis store
+        if: always()
+        run: |
+          cd store
+          [ -d listing-analysis ] || exit 0
+          git config user.name "realist-pipeline"
+          git config user.email "actions@users.noreply.github.com"
+          git add listing-analysis
+          if git diff --cached --quiet; then echo "Analysis store unchanged."; exit 0; fi
+          git commit -q -m "Photo tags $(date -u +%Y-%m-%dT%H:%MZ)"
+          for attempt in 1 2 3; do
+            if git ls-remote --exit-code --heads origin data >/dev/null; then git pull -q --rebase origin data; fi
+            git push -q origin HEAD:data && exit 0
+            sleep $((attempt * 10))
+          done
+          echo "::error::Could not push the analysis store"; exit 1

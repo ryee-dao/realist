@@ -12,7 +12,7 @@
   /* four home types: blue, orange, aqua, yellow (colour-blind-safe order) */
   --type-1: #3987e5; --type-2: #d95926; --type-3: #199e70; --type-4: #c98500;
   /* sequential (price, tiers): dark = low, bright = high */
-  --seq-1: #1b4634; --seq-2: #24694b; --seq-3: #349468; --seq-4: #6cc79b; --seq-5: #c9f0dc;
+  --seq-1: #2d6149; --seq-2: #307b59; --seq-3: #3d9d70; --seq-4: #6cc79b; --seq-5: #c9f0dc;
   /* diverging (change): blue = fell, neutral graphite middle, red = rose */
   --div-1: #5598e7; --div-2: #1c5cab; --div-3: #4a5056; --div-4: #9c3d3c; --div-5: #e66767;
   /* heat (reported incidents): kept apart from the green price ramp so the two sides of a compare differ */

@@ -72,7 +72,7 @@ class EstimateTests(unittest.TestCase):
         self.assertAlmostEqual(product / est["value"], 1, places=2)
         labels = [p["label"] for p in est["parts"]]
         self.assertIn("Finished basement", labels)
-        self.assertTrue(any(lab.startswith("Floor area above typical") for lab in labels))
+        self.assertIn("Bigger than typical", labels)
         self.assertFalse(any("Garage" in lab for lab in labels))   # an unrecorded level with no column adds nothing
 
     def test_unseen_area_takes_the_pooled_effect_and_no_area_gives_none(self):
@@ -177,8 +177,20 @@ class BuildTests(unittest.TestCase):
         self.assertNotIn("vsPpsfPct", condo["sold"])
         self.assertNotIn("estimate", condo)                # the area's sales are single family; a condo gets no median
         odd = by["https://x/4"]                            # 200 sq ft for $900k: the floor area is not believable
-        self.assertIn("Floor area looks inconsistent", odd["tags"])
-        self.assertEqual(odd["estimate"]["kind"], "median")
+        self.assertNotIn("vsPpsfPct", odd["sold"])
+        self.assertEqual(odd["estimate"]["kind"], "median")    # the median does not use the floor area
+
+    def test_cards_without_an_estimate_say_why(self):
+        _, by = self.cards()
+        self.assertEqual(by["https://x/3"]["noEstimate"], "No sold homes of this type nearby to compare")   # a condo
+        doc = json.loads(Path(self.root, "philadelphia/listings.json").read_text())
+        doc["rows"][3]["type"] = "Condo"      # 200 sq ft and not the area's main type: nothing to fall back on
+        doc["rows"][1].pop("sqft")
+        doc["rows"][1]["type"] = "Condo"
+        write(self.root, "philadelphia/listings.json", doc)
+        _, by = self.cards()
+        self.assertEqual(by["https://x/4"]["noEstimate"], "No sold homes of this type nearby to compare")
+        self.assertNotIn("estimate", by["https://x/4"])
 
     def test_items_are_split_into_pluses_and_minuses(self):
         _, by = self.cards()
@@ -188,14 +200,14 @@ class BuildTests(unittest.TestCase):
         self.assertIn("Sold as-is", minus)
         self.assertIn("Water-stained ceiling · 2 rooms", minus)
         self.assertIn("Not shown in photos: basement", minus)
-        self.assertIn("Reported incidents above the city figure", minus)
-        self.assertTrue(any(t.startswith("Sale prices here down") for t in minus))
-        self.assertIn("Asking $/sq ft 14% below recorded sales here", plus)
+        self.assertIn("More incidents than the city figure", minus)
+        self.assertIn("Prices here -1% in a year (city +3%)", minus)
+        self.assertIn("$/sq ft 14% under sold homes here", plus)
+        self.assertEqual(c["signals"], ["as_is", "renovated"])
         self.assertEqual(c["photo"]["findings"], 3)
         self.assertEqual([x["src"] for x in c["photo"]["crops"]], ["analysis/crops/philadelphia/a.jpg", "analysis/crops/philadelphia/b.jpg"])
-        self.assertIn("Unusual description", c["tags"])
         fish = by["https://x/1"]
-        self.assertIn("Reported incidents below the city figure", [i["text"] for i in fish["plus"]])
+        self.assertIn("Fewer incidents than the city figure", [i["text"] for i in fish["plus"]])
         words = json.dumps([by[u]["plus"] + by[u]["minus"] for u in by]).lower()
         for banned in ("safe", "dangerous", "good area", "bad area"):
             self.assertNotIn(banned, words)
@@ -234,6 +246,27 @@ class BuildTests(unittest.TestCase):
         _, by = self.cards()
         self.assertEqual((by["https://x/1"]["firstSeen"], by["https://x/1"]["lastSeen"]), ("2026-11-01", "2026-11-05"))
         self.assertNotIn("lastSeen", by["https://x/2"])
+
+    def test_detail_files_hold_findings_quotes_and_nearby_sales(self):
+        write(self.root, "philadelphia/sales.json", {"typeNames": ["Single family", "Condo"], "columns": {
+            "date": ["2026-06-01", "2026-07-01", "2026-05-01"], "price": [240000, 260000, 500000],
+            "address": ["102 Main St", "100 Main St", "9 Far Rd"], "type": [0, 0, 0], "area": [0, 0, 1],
+            "sqft": [1100, 1200, 1500], "lat": [39.9712, 39.9711, 39.99], "lon": [-75.1311, -75.1311, -75.12]}})
+        doc = lc.publish(self.root, "philadelphia", now=NOW, log=lambda *_: None)
+        by = {c["url"]: c for c in doc["cards"]}
+        folder = Path(self.root, "philadelphia/listing-detail")
+        self.assertEqual(len(list(folder.glob("*.json"))), len(by))
+        d1 = json.loads((folder / f"{by['https://x/1']['detail']}.json").read_text())
+        self.assertEqual([c["address"] for c in d1["comps"]], ["102 Main St"])      # its own address is not a comparison
+        d2 = json.loads((folder / f"{by['https://x/2']['detail']}.json").read_text())
+        self.assertEqual(d2["photo"]["findings"][0]["crops"], ["analysis/crops/philadelphia/a.jpg", "analysis/crops/philadelphia/b.jpg"])
+        self.assertEqual(d2["photo"]["missing"], ["basement"])
+        self.assertIn({"signal": "as_is", "label": "Sold as-is", "quote": "AS-IS"}, d2["quotes"])
+        self.assertEqual(d2["comps"][0]["address"], "9 Far Rd")                       # no pin: the area's latest sales
+        self.assertNotIn("_details", json.loads(Path(self.root, "philadelphia/listing-cards.json").read_text()))
+        (folder / "stale.json").write_text("{}")
+        lc.publish(self.root, "philadelphia", now=NOW, log=lambda *_: None)
+        self.assertFalse((folder / "stale.json").exists())
 
     def test_publish_writes_the_file_and_skips_cities_without_listings(self):
         doc = lc.publish(self.root, "philadelphia", now=NOW, log=lambda *_: None)

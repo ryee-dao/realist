@@ -1,10 +1,10 @@
 import '../styles/finder.css'
 import { useMemo, useRef, useState } from 'react'
-import { Area, Areas, City, Listings, useData } from '../lib/data'
-import { Theme } from '../lib/hooks'
+import { Area, Areas, City, Grid, Listings, useData } from '../lib/data'
+import { cssVar, Theme } from '../lib/hooks'
 import { monthLabel, num, pct, usdCompact } from '../lib/format'
 import { activityPercentiles, gradeOf, gradeStyle, percentiles, rankPool, Tier, TIER_SEQ, TIERS, tierStyle, useRamp, WEAK_BELOW } from '../lib/grades'
-import MapView, { MapPoint } from '../components/MapView'
+import SectionMap, { escapeHtml, SectionFill } from '../components/SectionMap'
 import { Segmented, SortHead } from '../components/bits'
 
 type Factor = 'yield' | 'growth1' | 'growth5' | 'price' | 'activity' | 'crime'
@@ -110,11 +110,30 @@ export default function ScreenerPage({ city, theme }: { city: City; theme: Theme
     }
   }, [pool, w, must])
 
-  const points: MapPoint[] = useMemo(() => scored.filter((s) => s.area.lat != null).map((s) => ({
-    id: s.area.key, lat: s.area.lat as number, lon: s.area.lon as number, radius: s.tier === 'S' ? 11 : s.tier === 'A' ? 9 : 7,
-    color: ramp[TIER_SEQ[s.tier]].bg,
-    tip: `${s.tier} tier · #${s.rank} ${s.area.name} · score ${s.score}`,
-  })).reverse(), [scored, ramp])
+  // the map: every area as a filled section, coloured by tier; areas left out by the filters or must-haves are muted
+  const { data: grid } = useData<Grid>(`${city.id}/grid.json`)
+  const { fillOf, tipOf } = useMemo(() => {
+    const list = data?.areas ?? []
+    const byKey = new Map(scored.map((s) => [s.area.key, s]))
+    const hiddenKeys = new Set(hidden.map((h) => h.area.key))
+    const muted = cssVar('--text-2')
+    return {
+      fillOf: (ai: number): SectionFill | null => {
+        const a = list[ai]
+        if (!a) return null
+        const s = byKey.get(a.key)
+        return s ? { color: ramp[TIER_SEQ[s.tier]].bg, opacity: 0.85 } : { color: muted, opacity: 0.35 }
+      },
+      tipOf: (ai: number) => {
+        const a = list[ai]
+        if (!a) return ''
+        const s = byKey.get(a.key)
+        const name = `<b>${escapeHtml(a.name)}</b>`
+        if (s) return `${name}<br>${s.tier} tier · #${s.rank} of ${scored.length} · score ${s.score}`
+        return `${name}<br>${hiddenKeys.has(a.key) ? 'Hidden by a must-have' : 'Left out by max price or min sales'}`
+      },
+    }
+  }, [data, scored, hidden, ramp, theme])   // eslint-disable-line react-hooks/exhaustive-deps
 
   const rows = useMemo(() => {
     if (sort.key === 'rank') return sort.dir === 1 ? scored : [...scored].reverse()
@@ -205,9 +224,13 @@ export default function ScreenerPage({ city, theme }: { city: City; theme: Theme
 
       <div className="f-split">
         <section className="card">
-          <MapView center={city.center} zoom={city.zoom} points={points} theme={theme} selected={sel?.area.key ?? null} onSelect={(id) => setPicked(String(id))} height={window.innerWidth < 600 ? 280 : 380} />
+          {grid ? <SectionMap city={city} theme={theme} grid={grid} fillOf={fillOf} tipOf={tipOf} height={window.innerWidth < 600 ? 300 : 420}
+              selected={sel ? data.areas.indexOf(sel.area) : null}
+              onSelect={(ai) => { const a = data.areas[ai]; if (a && scored.some((s) => s.area.key === a.key)) setPicked(a.key) }} />
+            : <div className="map loading" style={{ height: window.innerWidth < 600 ? 300 : 420 }}>Loading the map…</div>}
           <div className="map-legend">
             {TIERS.map((t) => <span key={t}><i className="key-box" style={{ background: ramp[TIER_SEQ[t]].bg }} />{t} tier</span>)}
+            <span><i className="key-box f-key-out" />Left out</span>
           </div>
         </section>
 

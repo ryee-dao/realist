@@ -13,9 +13,10 @@ from .analytics import nice_step, pct_change, quantile, shift
 
 SERIES_MONTHS = 60   # five years of monthly figures per area
 ROLL = 3             # medians run over the 3 months to each month, so one thin month does not swing the line
-ROLL_MIN = 8         # fewest sales in those 3 months for a median to be published
-THIN = 24            # fewer sales than this in 12 months: the area's headline figures are marked too few
-KPI_YOY_MIN = 20     # fewest sales in each 12-month window for a change in median to be published
+FEW_POINT = 5        # a chart point with fewer sales behind it is published but flagged as few sales
+THIN = 24            # a 12-month figure resting on fewer sales than this is flagged as few sales
+KPI_YOY_MIN = 20     # a change in median with fewer sales than this on either side is flagged as few sales
+YOY_FLOOR = 3        # below this on either side, no change is published at all
 SOLD_MONTHS = 6      # Sold prices looks at the latest 6 complete months...
 SOLD_MIN = 10        # ...and needs this many sales in them for a typical price
 SOLD_YOY_MIN = 20    # each side, for "vs a year earlier"
@@ -48,12 +49,14 @@ def _stats(rows, min_n):
         "p25": _q(prices, 0.25) if ok else None,
         "p75": _q(prices, 0.75) if ok else None,
         "ppsf": _q(ppsf, 0.5) if len(ppsf) >= min_n else None,
+        "nPpsf": len(ppsf),
     }
 
 
 def area_series(rows, areas, months, through):
     """Monthly sales count and rolling 3-month median price and price per sq ft for every listed area,
-    plus 12-month headline figures in the same shape as overview.json's kpi."""
+    with the number of sales behind each point, plus 12-month headline figures. Nothing is withheld for
+    being thin: each figure and point carries its sales count, and `few` flags those resting on few sales."""
     months = [m for m in months if m <= through][-SERIES_MONTHS:]
     groups = defaultdict(list)
     for r in rows:
@@ -62,30 +65,40 @@ def area_series(rows, areas, months, through):
     out = {}
     for a in areas:
         by_month = _by_month(groups.get(a["key"], []))
-        count, med, ppsf = [], [], []
+        count, med, med_n, ppsf, ppsf_n = [], [], [], [], []
         for m in months:
-            s = _stats(_window(by_month, m, ROLL), ROLL_MIN)
+            s = _stats(_window(by_month, m, ROLL), 1)
             count.append(len(by_month.get(m, [])))
             med.append(s["median"])
+            med_n.append(s["n"])
             ppsf.append(s["ppsf"])
-        now, was = _stats(_window(by_month, through, 12), 5), _stats(_window(by_month, shift(through, -12), 12), 5)
-        both = min(now["n"], was["n"]) >= KPI_YOY_MIN
+            ppsf_n.append(s["nPpsf"])
+        now, was = _stats(_window(by_month, through, 12), 1), _stats(_window(by_month, shift(through, -12), 12), 1)
+        both = min(now["n"], was["n"])
+        both_ppsf = min(now["nPpsf"], was["nPpsf"])
         prices12 = sorted(r["price"] for r in _window(by_month, through, 12))
         step = nice_step((quantile(prices12, 0.95) or 1) / 14)
         hist = [0] * 16
         for p in prices12:
             hist[min(15, p // step)] += 1
         out[a["key"]] = {
-            "count": count, "median": med, "ppsf": ppsf,
+            "count": count, "median": med, "medianN": med_n, "ppsf": ppsf, "ppsfN": ppsf_n,
             "kpi": {
-                "sales12": now["n"], "salesYoY": pct_change(now["n"], was["n"]) if was["n"] >= 10 else None,
-                "median12": now["median"], "medianYoY": pct_change(now["median"], was["median"]) if both else None,
-                "ppsf12": now["ppsf"], "ppsfYoY": pct_change(now["ppsf"], was["ppsf"]) if both else None,
-                "p25": now["p25"], "p75": now["p75"], "thin": now["n"] < THIN,
+                "sales12": now["n"], "salesBefore": was["n"],
+                "salesYoY": pct_change(now["n"], was["n"]) if was["n"] >= YOY_FLOOR else None,
+                "median12": now["median"], "medianYoY": pct_change(now["median"], was["median"]) if both >= YOY_FLOOR else None,
+                "ppsf12": now["ppsf"], "ppsfN12": now["nPpsf"],
+                "ppsfYoY": pct_change(now["ppsf"], was["ppsf"]) if both_ppsf >= YOY_FLOOR else None,
+                "p25": now["p25"], "p75": now["p75"],
+                "few": {
+                    "median": now["n"] < THIN, "medianYoY": both < KPI_YOY_MIN,
+                    "ppsf": now["nPpsf"] < THIN, "ppsfYoY": both_ppsf < KPI_YOY_MIN,
+                    "salesYoY": was["n"] < 10, "range": now["n"] < THIN,
+                },
             },
             "hist": {"step": step, "counts": hist},
         }
-    return {"months": months, "rollMonths": ROLL, "areas": out}
+    return {"months": months, "rollMonths": ROLL, "fewBelow": FEW_POINT, "areas": out}
 
 
 def sold_summary(rows, areas, through):

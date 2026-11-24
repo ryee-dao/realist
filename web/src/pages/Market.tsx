@@ -164,9 +164,9 @@ export default function Market({ city }: { city: City }) {
 const bandLabels = (edges: number[], n: number) =>
   Array.from({ length: n }, (_, i) => i === n - 1 ? `${usdCompact(edges[i])} and up` : `${usdCompact(edges[i])} – ${usdCompact(edges[i + 1])}`)
 
-function HistCard({ edges, counts, labels, what, color }: { edges: number[]; counts: number[]; labels: string[]; what: string; color: string }) {
+function HistCard({ edges, counts, labels, what, color, warn }: { edges: number[]; counts: number[]; labels: string[]; what: string; color: string; warn?: boolean }) {
   return (
-    <ChartCard title="Sale prices, last 12 months" subtitle={`How many ${what} sold in each price band`}
+    <ChartCard title={<>Sale prices, last 12 months <Few on={!!warn} /></>} subtitle={`How many ${what} sold in each price band`}
       table={{ head: ['Price band', 'Homes sold'], rows: labels.map((l, i) => [l, num(counts[i])]) }}>
       <ColumnChart labels={labels} values={counts} tickAlign="edge" format={compact} unit="Homes sold" color={color}
         ticks={(w) => edges.map((e, index) => ({ index, label: usdCompact(e) })).filter((_, i) => i % (w < 420 ? 5 : 3) === 0)} />
@@ -175,6 +175,15 @@ function HistCard({ edges, counts, labels, what, color }: { edges: number[]; cou
 }
 
 /** One area: recorded sales only. Listing figures are published by ZIP code, so they are left out here. */
+const FEW_MSG = 'Too few sales — data might be incomplete or inaccurate'
+
+/** Small warning marker; hover or tap (focus) shows the message. */
+function Few({ on = true }: { on?: boolean }) {
+  if (!on) return null
+  return <button type="button" className="few-mark" aria-label={FEW_MSG} data-tip={FEW_MSG}>!</button>
+}
+
+/** One area: recorded sales only. Every figure is shown; those resting on few sales carry a warning marker. */
 function AreaView({ picker, name, series, s, range, setRange }: {
   picker: React.ReactNode; name: string; series: AreaSeries; s: AreaSeries['areas'][string]; range: Range; setRange: (r: Range) => void
 }) {
@@ -183,66 +192,75 @@ function AreaView({ picker, name, series, s, range, setRange }: {
   const labels = months.map(monthLabel)
   const ticks = (w: number) => yearTicks(months, w)
   const k = s.kpi
+  const f = k.few
   const color = TYPE_COLOR['All homes']
   const edges = Array.from({ length: s.hist.counts.length + 1 }, (_, i) => i * s.hist.step)
   const median = s.median.slice(start)
+  const medianN = s.medianN.slice(start)
   const ppsf = s.ppsf.slice(start)
+  const ppsfN = s.ppsfN.slice(start)
   const count = s.count.slice(start)
+  const fewMed = median.map((v, i) => v != null && medianN[i] < series.fewBelow)
+  const fewPpsf = ppsf.map((v, i) => v != null && ppsfN[i] < series.fewBelow)
   return (
     <>
       <div className="filters market-filters">
         {picker}
         <Segmented label="Time range" value={range} onChange={setRange}
           options={[{ id: '3y', label: '3 years' }, { id: '5y', label: '5 years' }]} />
-        <span className="muted market-note">All home types · recorded sales only</span>
+        <span className="muted market-note">All home types · sold prices only</span>
       </div>
 
-      {k.thin && (
-        <div className="notice market-thin">
-          Too few sales: only {num(k.sales12)} in {name} in the last 12 months, so prices are not shown.
-        </div>
-      )}
       <div className="tiles market-tiles">
-        {!k.thin && <>
+        <div className="few-wrap hero"><Few on={f.median || (k.medianYoY != null && f.medianYoY)} />
           <StatTile hero label={`Median sale price · ${name}`} value={usd(k.median12)}>
             <Delta value={k.medianYoY} suffix="vs a year earlier" /><span className="muted"> · 12 months to {monthLabel(series.through)}</span>
           </StatTile>
+        </div>
+        <div className="few-wrap"><Few on={k.ppsf12 != null && (f.ppsf || (k.ppsfYoY != null && f.ppsfYoY))} />
           <StatTile label="Price per sq ft" value={k.ppsf12 == null ? 'Not published' : usd(k.ppsf12)}>
             {k.ppsf12 == null ? <span className="muted">No floor area on record</span> : <Delta value={k.ppsfYoY} suffix="vs a year earlier" />}
           </StatTile>
-        </>}
-        <StatTile label="Homes sold, 12 months" value={num(k.sales12)}>
-          <Delta value={k.salesYoY} suffix="vs the year before" />
-        </StatTile>
-        {!k.thin && k.p25 != null && (
-          <StatTile label="Middle half of sales" value={`${usdCompact(k.p25)} – ${usdCompact(k.p75)}`}>
-            <span className="muted">Last 12 months</span>
+        </div>
+        <div className="few-wrap"><Few on={k.salesYoY != null && f.salesYoY} />
+          <StatTile label="Homes sold, 12 months" value={num(k.sales12)}>
+            <Delta value={k.salesYoY} suffix="vs the year before" />
           </StatTile>
+        </div>
+        {k.p25 != null && (
+          <div className="few-wrap"><Few on={f.range} />
+            <StatTile label="Middle half of sales" value={`${usdCompact(k.p25)} – ${usdCompact(k.p75)}`}>
+              <span className="muted">Last 12 months</span>
+            </StatTile>
+          </div>
         )}
       </div>
-      <p className="muted market-note">Asking-price and listing figures are only published by ZIP code, so they are hidden for a single area. See New listings for homes on the market.</p>
+      <p className="muted market-note">Listing figures: city-wide only.</p>
 
       <div className="grid-2">
-        {!k.thin && (
-          <ChartCard className="span-2" title={`Median sale price, ${name}`}
-            subtitle={`Median over the ${series.rollMonths} months to each month, which smooths out thin months. Gaps: too few sales.`}
-            table={{ head: ['Month', 'Median sale price'], rows: labels.map((l, i) => [l, usd(median[i])]).reverse() }}>
-            <LineChart labels={labels} ticks={ticks} series={[{ name: 'Median sale price', color, values: median }]} format={usd} axisFormat={usdCompact} height={300} />
+        {median.some((v) => v != null) && (
+          <ChartCard className="span-2" title={<>Median sale price <Few on={fewMed.some(Boolean)} /></>}
+            subtitle={`${series.rollMonths}-month rolling median`}
+            table={{ head: ['Month', 'Median sale price', 'Sales'], rows: labels.map((l, i) => [l, usd(median[i]), num(medianN[i])]).reverse() }}>
+            <LineChart labels={labels} ticks={ticks} series={[{ name: 'Median sale price', color, values: median, few: fewMed }]}
+              format={usd} axisFormat={usdCompact} height={300} />
           </ChartCard>
         )}
-        <ChartCard title="Homes sold per month" subtitle={`Recorded sales in ${name}`}
+        <ChartCard title="Homes sold per month" subtitle={name}
           table={{ head: ['Month', 'Homes sold'], rows: labels.map((l, i) => [l, num(count[i])]).reverse() }}>
           <ColumnChart labels={labels} values={count} ticks={ticks} format={compact} unit="Homes sold" color={color} />
         </ChartCard>
-        {!k.thin && <HistCard edges={edges} counts={s.hist.counts} labels={bandLabels(edges, s.hist.counts.length)} what="homes" color={color} />}
-        {!k.thin && ppsf.some((v) => v != null) && (
-          <ChartCard className="span-2" title="Price per square foot" subtitle={`Median over the ${series.rollMonths} months to each month, for homes whose floor area is on record`}
-            table={{ head: ['Month', 'Price per sq ft'], rows: labels.map((l, i) => [l, usd(ppsf[i])]).reverse() }}>
-            <LineChart labels={labels} ticks={ticks} series={[{ name: 'Median price per sq ft', color, values: ppsf }]} format={usd} height={240} />
+        {k.sales12 > 0 && <HistCard edges={edges} counts={s.hist.counts} labels={bandLabels(edges, s.hist.counts.length)} what="homes" color={color} warn={f.range} />}
+        {ppsf.some((v) => v != null) && (
+          <ChartCard className="span-2" title={<>Price per sq ft <Few on={fewPpsf.some(Boolean)} /></>}
+            subtitle={`${series.rollMonths}-month rolling median, homes with floor area on record`}
+            table={{ head: ['Month', 'Price per sq ft', 'Sales'], rows: labels.map((l, i) => [l, usd(ppsf[i]), num(ppsfN[i])]).reverse() }}>
+            <LineChart labels={labels} ticks={ticks} series={[{ name: 'Median price per sq ft', color, values: ppsf, few: fewPpsf }]}
+              format={(v) => usd(v)} height={240} />
           </ChartCard>
         )}
       </div>
-      <p className="footnote">Medians mix every home that sold, so a change can reflect a different mix of homes as well as a change in values.</p>
+      <p className="footnote">Hollow yellow points rest on under {series.fewBelow} sales. Medians mix every home sold, so they move with the mix as well as with values.</p>
     </>
   )
 }

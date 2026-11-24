@@ -70,7 +70,13 @@ jobs:
             echo "Store unchanged."
           else
             git commit -q -m "Harvest $(date -u +%Y-%m-%dT%H:%MZ)"
-            git push -q origin data
+            # the Photo tags workflow also pushes to this branch (listing-analysis/ only), so rebase and retry
+            for attempt in 1 2 3; do
+              if git ls-remote --exit-code --heads origin data >/dev/null; then git pull -q --rebase origin data; fi
+              git push -q origin HEAD:data && break
+              if [ "$attempt" = 3 ]; then echo "::error::Could not push the harvest store"; exit 1; fi
+              sleep $((attempt * 10))
+            done
           fi
 
       - uses: actions/setup-node@v4
@@ -102,6 +108,10 @@ jobs:
               echo '{"status":"unavailable"}' > "web/public/data/$city/new-listings.json"
             fi
           done
+          # Listing tags: text signals for every city, plus the photo tags and defect crops the Photo tags workflow
+          # keeps on the data branch (store/listing-analysis); writes <city>/listing-tags.json and analysis/crops/.
+          python -m engine.listing_analysis --no-photos --output web/public/data --listings harvested-listings \
+            --cache-dir store/listing-analysis || echo "::warning::Could not build listing tags"
           # The New listings page's cards: merged listings + this run's area figures and price model (and tags if present)
           python -m engine.listing_cards --output web/public/data --listings harvested-listings --store store || echo "::warning::Could not build listing cards"
 

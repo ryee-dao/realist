@@ -3,14 +3,18 @@
 /** <city>/area-series.json: monthly figures for each area listed in areas.json, keyed by area key. */
 export interface AreaSeries {
   city: string; through: string; months: string[]; rollMonths: number
+  fewBelow: number                   // a chart point resting on fewer sales than this is flagged "few sales"
   areas: Record<string, {
     count: number[]                  // homes sold in each month
-    median: (number | null)[]        // median sale price over the rollMonths to each month
+    median: (number | null)[]        // median sale price over the rollMonths to each month (null: no sales)
+    medianN: number[]                // sales behind each median point
     ppsf: (number | null)[]          // same, price per sq ft
+    ppsfN: number[]
     kpi: {
-      sales12: number; salesYoY: number | null; median12: number | null; medianYoY: number | null
-      ppsf12: number | null; ppsfYoY: number | null; p25: number | null; p75: number | null
-      thin: boolean                   // too few sales in 12 months for steady figures
+      sales12: number; salesBefore: number; salesYoY: number | null; median12: number | null; medianYoY: number | null
+      ppsf12: number | null; ppsfN12: number; ppsfYoY: number | null; p25: number | null; p75: number | null
+      /** figures resting on few sales: shown, with a warning marker */
+      few: { median: boolean; medianYoY: boolean; ppsf: boolean; ppsfYoY: boolean; salesYoY: boolean; range: boolean }
     }
     hist: { step: number; counts: number[] }   // last 12 months, bands of `step` dollars, the last open-ended
   }>
