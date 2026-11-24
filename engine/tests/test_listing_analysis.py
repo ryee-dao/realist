@@ -1250,7 +1250,7 @@ class RateLimitShapeTests(unittest.TestCase):
         mode, why = la.decide_mode([stored], NOW, budget_5h=1.0)
         self.assertEqual(mode, "normal")
         self.assertIn("weekly 49%", why)
-        high = entry(1, 0.0, rateLimits={"unknown": dict(info, unifiedWindows={"seven_day": {"utilization": 0.55}})})
+        high = entry(1, 0.0, rateLimits={"unknown": dict(info, unifiedWindows={"seven_day": {"utilization": 0.66}})})
         self.assertEqual(la.decide_mode([high], NOW)[0], "slow")
 
 
