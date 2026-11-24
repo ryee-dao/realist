@@ -1,0 +1,984 @@
+{
+ "city": "philadelphia",
+ "kind": "read",
+ "readAt": "2026-11-24T07:32:13+00:00",
+ "runId": "20261124T073206Z",
+ "samples": [
+  {
+   "readAt": "2026-11-24T07:32:09+00:00",
+   "records": [
+    {
+     "address": "1838 Mountain St",
+     "date": "2026-09-02",
+     "kind": "Single family",
+     "price": 361000,
+     "reason": null,
+     "verdict": "keep"
+    },
+    {
+     "address": "3431 Amber St",
+     "date": "2026-08-30",
+     "kind": "Single Family",
+     "price": 1,
+     "reason": "nominal price (under $10,000)",
+     "verdict": "reject"
+    },
+    {
+     "address": "4642 N Penn St",
+     "date": "2026-08-29",
+     "kind": "Multi-family",
+     "price": 175000,
+     "reason": null,
+     "verdict": "keep"
+    },
+    {
+     "address": "3451 Braddock St",
+     "date": "2026-08-28",
+     "kind": "Single family",
+     "price": 38000,
+     "reason": null,
+     "verdict": "keep"
+    },
+    {
+     "address": "2101-17 Chestnut St Unit 1107 #1107",
+     "date": "2026-08-26",
+     "kind": "No property record",
+     "price": 115000,
+     "reason": "no matching property record",
+     "verdict": "reject"
+    },
+    {
+     "address": "5349 Delancey St",
+     "date": "2026-08-26",
+     "kind": "Single family",
+     "price": 235000,
+     "reason": null,
+     "verdict": "keep"
+    },
+    {
+     "address": "5253 N American St",
+     "date": "2026-08-10",
+     "kind": "Single family",
+     "price": 40000,
+     "reason": null,
+     "verdict": "keep"
+    },
+    {
+     "address": "501 S 57th St",
+     "date": "2026-08-10",
+     "kind": "Multi Family",
+     "price": 1,
+     "reason": "nominal price (under $10,000)",
+     "verdict": "reject"
+    },
+    {
+     "address": "4513 Frankford Ave",
+     "date": "2026-08-07",
+     "kind": "Mixed Use",
+     "price": 1,
+     "reason": "nominal price (under $10,000)",
+     "verdict": "reject"
+    },
+    {
+     "address": "1748 W Allegheny Ave",
+     "date": "2026-08-07",
+     "kind": "Single family",
+     "price": 50000,
+     "reason": null,
+     "verdict": "keep"
+    },
+    {
+     "address": "165 W Indiana Ave",
+     "date": "2026-08-07",
+     "kind": "No property record",
+     "price": 38000,
+     "reason": "no matching property record",
+     "verdict": "reject"
+    },
+    {
+     "address": "6034 Lawndale St",
+     "date": "2026-08-07",
+     "kind": "No property record",
+     "price": 1,
+     "reason": "no matching property record",
+     "verdict": "reject"
+    },
+    {
+     "address": "2619 S 12th St",
+     "date": "2026-08-06",
+     "kind": "Single Family",
+     "price": 1,
+     "reason": "nominal price (under $10,000)",
+     "verdict": "reject"
+    },
+    {
+     "address": "5000 Rosehill St",
+     "date": "2026-08-06",
+     "kind": "Single Family",
+     "price": 1,
+     "reason": "nominal price (under $10,000)",
+     "verdict": "reject"
+    },
+    {
+     "address": "31-35 W Girard Ave",
+     "date": "2026-08-05",
+     "kind": "Commercial",
+     "price": 10,
+     "reason": "deed covers several properties",
+     "verdict": "reject"
+    },
+    {
+     "address": "1221-27 N Front St",
+     "date": "2026-08-05",
+     "kind": "No property record",
+     "price": 10,
+     "reason": "no matching property record",
+     "verdict": "reject"
+    },
+    {
+     "address": "7225 Barnard Ave",
+     "date": "2026-08-05",
+     "kind": "Multi-family",
+     "price": 428500,
+     "reason": null,
+     "verdict": "keep"
+    },
+    {
+     "address": "37 N Preston St",
+     "date": "2026-08-05",
+     "kind": "Multi-family",
+     "price": 660000,
+     "reason": null,
+     "verdict": "keep"
+    },
+    {
+     "address": "3325 W Harold St",
+     "date": "2026-08-05",
+     "kind": "Single Family",
+     "price": 1,
+     "reason": "nominal price (under $10,000)",
+     "verdict": "reject"
+    },
+    {
+     "address": "1507 Lott Ave",
+     "date": "2026-08-04",
+     "kind": "Single Family",
+     "price": 1,
+     "reason": "nominal price (under $10,000)",
+     "verdict": "reject"
+    },
+    {
+     "address": "1854 W Hunting Park Ave",
+     "date": "2026-08-04",
+     "kind": "Single Family",
+     "price": 1,
+     "reason": "nominal price (under $10,000)",
+     "verdict": "reject"
+    },
+    {
+     "address": "433 Hellerman St",
+     "date": "2026-08-04",
+     "kind": "Single Family",
+     "price": 1,
+     "reason": "nominal price (under $10,000)",
+     "verdict": "reject"
+    },
+    {
+     "address": "3146 N Sheridan St",
+     "date": "2026-08-04",
+     "kind": "Single Family",
+     "price": 1,
+     "reason": "nominal price (under $10,000)",
+     "verdict": "reject"
+    },
+    {
+     "address": "2318 Nicholas St",
+     "date": "2026-08-04",
+     "kind": "Single Family",
+     "price": 1,
+     "reason": "nominal price (under $10,000)",
+     "verdict": "reject"
+    },
+    {
+     "address": "612 Poquessing Ave",
+     "date": "2026-08-04",
+     "kind": "No property record",
+     "price": 1,
+     "reason": "no matching property record",
+     "verdict": "reject"
+    },
+    {
+     "address": "4552 Tudor St",
+     "date": "2026-08-04",
+     "kind": "Single Family",
+     "price": 1,
+     "reason": "nominal price (under $10,000)",
+     "verdict": "reject"
+    },
+    {
+     "address": "1812 Forrestal St",
+     "date": "2026-08-04",
+     "kind": "Single Family",
+     "price": 1,
+     "reason": "nominal price (under $10,000)",
+     "verdict": "reject"
+    },
+    {
+     "address": "2401 Pennsylvania Ave Unit 20C43 #20C43",
+     "date": "2026-08-03",
+     "kind": "No property record",
+     "price": 1,
+     "reason": "no matching property record",
+     "verdict": "reject"
+    },
+    {
+     "address": "1220 Titan St",
+     "date": "2026-08-03",
+     "kind": "Single family",
+     "price": 427500,
+     "reason": null,
+     "verdict": "keep"
+    },
+    {
+     "address": "301 Tyson Ave",
+     "date": "2026-08-03",
+     "kind": "Single Family",
+     "price": 1,
+     "reason": "nominal price (under $10,000)",
+     "verdict": "reject"
+    },
+    {
+     "address": "4241 Aldine St",
+     "date": "2026-08-03",
+     "kind": "Multi-family",
+     "price": 335000,
+     "reason": null,
+     "verdict": "keep"
+    },
+    {
+     "address": "7120 Stenton Ave",
+     "date": "2026-08-03",
+     "kind": "Single Family",
+     "price": 1,
+     "reason": "nominal price (under $10,000)",
+     "verdict": "reject"
+    },
+    {
+     "address": "5330 N Sydenham St",
+     "date": "2026-08-03",
+     "kind": "Single family",
+     "price": 230000,
+     "reason": null,
+     "verdict": "keep"
+    },
+    {
+     "address": "5033 Catharine St",
+     "date": "2026-08-03",
+     "kind": "Single Family",
+     "price": 10,
+     "reason": "nominal price (under $10,000)",
+     "verdict": "reject"
+    },
+    {
+     "address": "5003 Florence Ave",
+     "date": "2026-08-03",
+     "kind": "Single Family",
+     "price": 10,
+     "reason": "nominal price (under $10,000)",
+     "verdict": "reject"
+    },
+    {
+     "address": "23 N Millick St",
+     "date": "2026-08-03",
+     "kind": "Single family",
+     "price": 245000,
+     "reason": null,
+     "verdict": "keep"
+    },
+    {
+     "address": "2228 Tyson Ave",
+     "date": "2026-08-03",
+     "kind": "Single Family",
+     "price": 1,
+     "reason": "nominal price (under $10,000)",
+     "verdict": "reject"
+    },
+    {
+     "address": "717 S Chris Columbus Bld Unit 1117 #1117",
+     "date": "2026-08-03",
+     "kind": "No property record",
+     "price": 10,
+     "reason": "no matching property record",
+     "verdict": "reject"
+    },
+    {
+     "address": "5322 Poplar St",
+     "date": "2026-08-03",
+     "kind": "Single Family",
+     "price": 1,
+     "reason": "nominal price (under $10,000)",
+     "verdict": "reject"
+    },
+    {
+     "address": "3223 Rorer St",
+     "date": "2026-08-03",
+     "kind": "Single Family",
+     "price": 1,
+     "reason": "nominal price (under $10,000)",
+     "verdict": "reject"
+    },
+    {
+     "address": "6654 Algard St",
+     "date": "2026-08-03",
+     "kind": "Single family",
+     "price": 101500,
+     "reason": null,
+     "verdict": "keep"
+    },
+    {
+     "address": "2409 N Myrtlewood St",
+     "date": "2026-08-03",
+     "kind": "Single Family",
+     "price": 1,
+     "reason": "nominal price (under $10,000)",
+     "verdict": "reject"
+    },
+    {
+     "address": "725 E Woodlawn St",
+     "date": "2026-08-01",
+     "kind": "Vacant Land",
+     "price": 1,
+     "reason": "nominal price (under $10,000)",
+     "verdict": "reject"
+    },
+    {
+     "address": "205 Mifflin St",
+     "date": "2026-08-01",
+     "kind": "Single family",
+     "price": 388000,
+     "reason": null,
+     "verdict": "keep"
+    },
+    {
+     "address": "1714 Waterloo St",
+     "date": "2026-08-01",
+     "kind": "Single Family",
+     "price": 1,
+     "reason": "nominal price (under $10,000)",
+     "verdict": "reject"
+    },
+    {
+     "address": "7511 Brous Ave",
+     "date": "2026-07-31",
+     "kind": "Single Family",
+     "price": 1,
+     "reason": "nominal price (under $10,000)",
+     "verdict": "reject"
+    },
+    {
+     "address": "125 W Sylvania St",
+     "date": "2026-07-31",
+     "kind": "Single Family",
+     "price": 1,
+     "reason": "nominal price (under $10,000)",
+     "verdict": "reject"
+    },
+    {
+     "address": "2338 Montrose St",
+     "date": "2026-07-31",
+     "kind": "Vacant Land",
+     "price": 1300000,
+     "reason": "not a residential home type",
+     "verdict": "reject"
+    },
+    {
+     "address": "1316 N Franklin St Unit 3 #3",
+     "date": "2026-07-31",
+     "kind": "No property record",
+     "price": 367500,
+     "reason": "no matching property record",
+     "verdict": "reject"
+    },
+    {
+     "address": "3825 Elsinore St",
+     "date": "2026-07-31",
+     "kind": "Single family",
+     "price": 119000,
+     "reason": null,
+     "verdict": "keep"
+    },
+    {
+     "address": "6137 Bingham St",
+     "date": "2026-07-31",
+     "kind": "Single family",
+     "price": 120000,
+     "reason": null,
+     "verdict": "keep"
+    },
+    {
+     "address": "332 W Queen Ln",
+     "date": "2026-07-31",
+     "kind": "Single family",
+     "price": 399900,
+     "reason": null,
+     "verdict": "keep"
+    },
+    {
+     "address": "6530 Kindred St",
+     "date": "2026-07-31",
+     "kind": "Single family",
+     "price": 265000,
+     "reason": null,
+     "verdict": "keep"
+    },
+    {
+     "address": "1001--13 Chestnut St Unit 705E #705E",
+     "date": "2026-07-31",
+     "kind": "No property record",
+     "price": 255000,
+     "reason": "no matching property record",
+     "verdict": "reject"
+    },
+    {
+     "address": "3421 Stanwood St",
+     "date": "2026-07-31",
+     "kind": "Single family",
+     "price": 217000,
+     "reason": null,
+     "verdict": "keep"
+    },
+    {
+     "address": "5551 Chancellor St",
+     "date": "2026-07-31",
+     "kind": "Single family",
+     "price": 210000,
+     "reason": null,
+     "verdict": "keep"
+    },
+    {
+     "address": "1837 73rd Ave",
+     "date": "2026-07-31",
+     "kind": "Single family",
+     "price": 250000,
+     "reason": null,
+     "verdict": "keep"
+    },
+    {
+     "address": "6623 Guyer Ave",
+     "date": "2026-07-31",
+     "kind": "Single family",
+     "price": 107000,
+     "reason": null,
+     "verdict": "keep"
+    },
+    {
+     "address": "1820 N Front St Unit C #C",
+     "date": "2026-07-31",
+     "kind": "No property record",
+     "price": 333000,
+     "reason": "no matching property record",
+     "verdict": "reject"
+    },
+    {
+     "address": "1203 S 28th St",
+     "date": "2026-07-31",
+     "kind": "Single family",
+     "price": 100000,
+     "reason": null,
+     "verdict": "keep"
+    }
+   ],
+   "source": "Deed transfers + property records"
+  },
+  {
+   "readAt": "2026-11-24T07:32:13+00:00",
+   "records": [
+    {
+     "address": "3323 Glenview St",
+     "date": "2026-10-13",
+     "kind": "Single family",
+     "price": 235000,
+     "reason": null,
+     "verdict": "keep"
+    },
+    {
+     "address": "2319 S Warnock St",
+     "date": "2026-10-10",
+     "kind": "Single family",
+     "price": 370000,
+     "reason": null,
+     "verdict": "keep"
+    },
+    {
+     "address": "3648 N 7th St",
+     "date": "2026-10-09",
+     "kind": "Single family",
+     "price": 25000,
+     "reason": null,
+     "verdict": "keep"
+    },
+    {
+     "address": "2629 S Marshall St",
+     "date": "2026-10-09",
+     "kind": "Single family",
+     "price": 142000,
+     "reason": null,
+     "verdict": "keep"
+    },
+    {
+     "address": "1631 S 22nd St",
+     "date": "2026-10-09",
+     "kind": "Single family",
+     "price": 255000,
+     "reason": null,
+     "verdict": "keep"
+    },
+    {
+     "address": "814 Caledonia St",
+     "date": "2026-10-08",
+     "kind": "Single family",
+     "price": 379500,
+     "reason": null,
+     "verdict": "keep"
+    },
+    {
+     "address": "5214 Hawthorne St",
+     "date": "2026-10-08",
+     "kind": "Single family",
+     "price": 18000,
+     "reason": null,
+     "verdict": "keep"
+    },
+    {
+     "address": "3210 N 2nd St",
+     "date": "2026-10-08",
+     "kind": "Single family",
+     "price": 20000,
+     "reason": null,
+     "verdict": "keep"
+    },
+    {
+     "address": "7151 Vandike St",
+     "date": "2026-10-08",
+     "kind": "Single family",
+     "price": 200000,
+     "reason": null,
+     "verdict": "keep"
+    },
+    {
+     "address": "4262 Viola St",
+     "date": "2026-10-08",
+     "kind": "Single family",
+     "price": 75000,
+     "reason": null,
+     "verdict": "keep"
+    },
+    {
+     "address": "322 E Sterner St",
+     "date": "2026-10-07",
+     "kind": "Single family",
+     "price": 200000,
+     "reason": null,
+     "verdict": "keep"
+    },
+    {
+     "address": "1121 Solly Ave",
+     "date": "2026-10-07",
+     "kind": "Single family",
+     "price": 360000,
+     "reason": null,
+     "verdict": "keep"
+    },
+    {
+     "address": "2216 Tulip St",
+     "date": "2026-10-07",
+     "kind": "Single family",
+     "price": 675000,
+     "reason": null,
+     "verdict": "keep"
+    },
+    {
+     "address": "6282 Souder St",
+     "date": "2026-10-07",
+     "kind": "Single family",
+     "price": 150000,
+     "reason": null,
+     "verdict": "keep"
+    },
+    {
+     "address": "3605 Biscayne Pl",
+     "date": "2026-10-07",
+     "kind": "Single family",
+     "price": 208100,
+     "reason": null,
+     "verdict": "keep"
+    },
+    {
+     "address": "1533 Rosalie St",
+     "date": "2026-10-07",
+     "kind": "Single family",
+     "price": 189000,
+     "reason": null,
+     "verdict": "keep"
+    },
+    {
+     "address": "402 Solly Ave",
+     "date": "2026-10-07",
+     "kind": "Single family",
+     "price": 329999,
+     "reason": null,
+     "verdict": "keep"
+    },
+    {
+     "address": "5504 Jane St",
+     "date": "2026-10-06",
+     "kind": "Single family",
+     "price": 70000,
+     "reason": null,
+     "verdict": "keep"
+    },
+    {
+     "address": "6731 N 18th St",
+     "date": "2026-10-06",
+     "kind": "Single family",
+     "price": 190000,
+     "reason": null,
+     "verdict": "keep"
+    },
+    {
+     "address": "1408 W Clearfield St",
+     "date": "2026-10-06",
+     "kind": "Single family",
+     "price": 69900,
+     "reason": null,
+     "verdict": "keep"
+    },
+    {
+     "address": "1105 E Hewson St",
+     "date": "2026-10-06",
+     "kind": "Single family",
+     "price": 210000,
+     "reason": null,
+     "verdict": "keep"
+    },
+    {
+     "address": "4305 Greenmount Rd",
+     "date": "2026-10-06",
+     "kind": "Single family",
+     "price": 382500,
+     "reason": null,
+     "verdict": "keep"
+    },
+    {
+     "address": "2720 Alresford St",
+     "date": "2026-10-06",
+     "kind": "Single family",
+     "price": 285000,
+     "reason": null,
+     "verdict": "keep"
+    },
+    {
+     "address": "1736 Spruce St",
+     "date": "2026-10-06",
+     "kind": "Multi-family",
+     "price": 2000000,
+     "reason": null,
+     "verdict": "keep"
+    },
+    {
+     "address": "2637 N Bancroft St",
+     "date": "2026-10-06",
+     "kind": "Single family",
+     "price": 44000,
+     "reason": null,
+     "verdict": "keep"
+    },
+    {
+     "address": "1031 Hartel Ave",
+     "date": "2026-10-06",
+     "kind": "Single family",
+     "price": 313000,
+     "reason": null,
+     "verdict": "keep"
+    },
+    {
+     "address": "2127 S 16th St",
+     "date": "2026-10-06",
+     "kind": "Single family",
+     "price": 285000,
+     "reason": null,
+     "verdict": "keep"
+    },
+    {
+     "address": "1828 S Bancroft St",
+     "date": "2026-10-06",
+     "kind": "Single family",
+     "price": 327000,
+     "reason": null,
+     "verdict": "keep"
+    },
+    {
+     "address": "2846 Normandy Dr",
+     "date": "2026-10-06",
+     "kind": "Single family",
+     "price": 370000,
+     "reason": null,
+     "verdict": "keep"
+    },
+    {
+     "address": "4914 Ormes St",
+     "date": "2026-10-06",
+     "kind": "Single family",
+     "price": 215000,
+     "reason": null,
+     "verdict": "keep"
+    },
+    {
+     "address": "1317 S 22nd St",
+     "date": "2026-10-06",
+     "kind": "Single family",
+     "price": 305000,
+     "reason": null,
+     "verdict": "keep"
+    },
+    {
+     "address": "1206 S Millick St",
+     "date": "2026-10-05",
+     "kind": "Single family",
+     "price": 140000,
+     "reason": null,
+     "verdict": "keep"
+    },
+    {
+     "address": "2200 Berwyn Pl",
+     "date": "2026-10-05",
+     "kind": "Single family",
+     "price": 400000,
+     "reason": null,
+     "verdict": "keep"
+    },
+    {
+     "address": "119 Sparks St",
+     "date": "2026-10-05",
+     "kind": "Single family",
+     "price": 245000,
+     "reason": null,
+     "verdict": "keep"
+    },
+    {
+     "address": "1634 S 16th St",
+     "date": "2026-10-05",
+     "kind": "Single family",
+     "price": 465000,
+     "reason": null,
+     "verdict": "keep"
+    },
+    {
+     "address": "546 S Salford St",
+     "date": "2026-10-05",
+     "kind": "Single family",
+     "price": 191500,
+     "reason": null,
+     "verdict": "keep"
+    },
+    {
+     "address": "2204 S Bonsall St",
+     "date": "2026-10-05",
+     "kind": "Single family",
+     "price": 100000,
+     "reason": null,
+     "verdict": "keep"
+    },
+    {
+     "address": "7242 Algard St",
+     "date": "2026-10-05",
+     "kind": "Single family",
+     "price": 235000,
+     "reason": null,
+     "verdict": "keep"
+    },
+    {
+     "address": "6831 N Broad St",
+     "date": "2026-10-05",
+     "kind": "Multi-family",
+     "price": 175000,
+     "reason": null,
+     "verdict": "keep"
+    },
+    {
+     "address": "12626 Chilton Rd",
+     "date": "2026-10-05",
+     "kind": "Single family",
+     "price": 350000,
+     "reason": null,
+     "verdict": "keep"
+    },
+    {
+     "address": "5425 Beaumont St",
+     "date": "2026-10-05",
+     "kind": "Single family",
+     "price": 147500,
+     "reason": null,
+     "verdict": "keep"
+    },
+    {
+     "address": "1849 Fuller St",
+     "date": "2026-10-05",
+     "kind": "Single family",
+     "price": 136276,
+     "reason": null,
+     "verdict": "keep"
+    },
+    {
+     "address": "2715 Mower St",
+     "date": "2026-10-05",
+     "kind": "Single family",
+     "price": 369000,
+     "reason": null,
+     "verdict": "keep"
+    },
+    {
+     "address": "2524 W Allegheny Ave",
+     "date": "2026-10-05",
+     "kind": "Single family",
+     "price": 104000,
+     "reason": null,
+     "verdict": "keep"
+    },
+    {
+     "address": "461 Summit Ave",
+     "date": "2026-10-05",
+     "kind": "Single family",
+     "price": 530000,
+     "reason": null,
+     "verdict": "keep"
+    },
+    {
+     "address": "5720 N Camac St",
+     "date": "2026-10-03",
+     "kind": "Single family",
+     "price": 42888,
+     "reason": null,
+     "verdict": "keep"
+    },
+    {
+     "address": "223 Kenilworth Ave",
+     "date": "2026-10-03",
+     "kind": "Single family",
+     "price": 270000,
+     "reason": null,
+     "verdict": "keep"
+    },
+    {
+     "address": "2038 S 69th St",
+     "date": "2026-10-02",
+     "kind": "Single family",
+     "price": 155000,
+     "reason": null,
+     "verdict": "keep"
+    },
+    {
+     "address": "1537 W Oakdale St",
+     "date": "2026-10-02",
+     "kind": "Single family",
+     "price": 20000,
+     "reason": null,
+     "verdict": "keep"
+    },
+    {
+     "address": "659 N 33rd St",
+     "date": "2026-10-02",
+     "kind": "Multi-family",
+     "price": 375000,
+     "reason": null,
+     "verdict": "keep"
+    },
+    {
+     "address": "3324 Ashville St",
+     "date": "2026-10-02",
+     "kind": "Single family",
+     "price": 269000,
+     "reason": null,
+     "verdict": "keep"
+    },
+    {
+     "address": "4646 N 11th St",
+     "date": "2026-10-02",
+     "kind": "Single family",
+     "price": 130000,
+     "reason": null,
+     "verdict": "keep"
+    },
+    {
+     "address": "1809 S Chadwick St",
+     "date": "2026-10-02",
+     "kind": "Single family",
+     "price": 380000,
+     "reason": null,
+     "verdict": "keep"
+    },
+    {
+     "address": "1027 S 50th St",
+     "date": "2026-10-02",
+     "kind": "Single family",
+     "price": 380000,
+     "reason": null,
+     "verdict": "keep"
+    },
+    {
+     "address": "4418 Saint Davids St",
+     "date": "2026-10-02",
+     "kind": "Single family",
+     "price": 327000,
+     "reason": null,
+     "verdict": "keep"
+    },
+    {
+     "address": "2934 Aramingo Ave",
+     "date": "2026-10-02",
+     "kind": "Single family",
+     "price": 105000,
+     "reason": null,
+     "verdict": "keep"
+    },
+    {
+     "address": "8221 Forrest Ave",
+     "date": "2026-10-02",
+     "kind": "Single family",
+     "price": 110000,
+     "reason": null,
+     "verdict": "keep"
+    },
+    {
+     "address": "4424 N 8th St",
+     "date": "2026-10-02",
+     "kind": "Single family",
+     "price": 120000,
+     "reason": null,
+     "verdict": "keep"
+    },
+    {
+     "address": "817 S Leithgow St",
+     "date": "2026-10-02",
+     "kind": "Single family",
+     "price": 336500,
+     "reason": null,
+     "verdict": "keep"
+    },
+    {
+     "address": "1305 S Hancock St",
+     "date": "2026-10-02",
+     "kind": "Single family",
+     "price": 722000,
+     "reason": null,
+     "verdict": "keep"
+    }
+   ],
+   "source": "Newest sales from property records"
+  }
+ ],
+ "sources": [
+  "Deed transfers + property records",
+  "Newest sales from property records"
+ ]
+}
