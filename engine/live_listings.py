@@ -419,13 +419,98 @@ def publish(root, city, requested, details, now=None, load=fetch, pause=time.sle
     return fresh
 
 
+# ---- seed: carry homes already harvested elsewhere into the hosted store ----------------------------------------
+
+# Only what the site already shows about a home. No description, summary, broker text or photo URLs: the seed is
+# stored on a public branch.
+SEED_FIELDS = ("key", "url", "address", "price", "date", "beds", "baths", "sqft", "type", "lat", "lon", "zip",
+               "firstSeen", "lastSeen")
+SEED_SOURCE_FIELDS = ("provider", "source", "url", "asOf")
+
+
+def seed_row(row):
+    out = {k: row[k] for k in SEED_FIELDS if row.get(k) not in (None, "", [])}
+    out["source"] = row.get("source")
+    out["sources"] = [{k: e[k] for k in SEED_SOURCE_FIELDS if e.get(k)} for e in row.get("sources") or [] if isinstance(e, dict) and e.get("url")]
+    if not out.get("lastSeen"):
+        seen = [e["asOf"] for e in out["sources"] if e.get("asOf")]
+        if seen:
+            out["lastSeen"] = max(seen)
+            out.setdefault("firstSeen", min(seen))
+    return out
+
+
+def export_seed(root, out_dir, now=None, cities=CITIES):
+    """Write <out_dir>/<city>.json: the merged homes still within KEEP_DAYS, slimmed to SEED_FIELDS. Returns counts."""
+    now = now or datetime.now(timezone.utc)
+    counts = {}
+    for city in cities:
+        merged = read_snapshot(Path(root) / city / "listings.json")
+        _, today = window(city, now)
+        earliest = (datetime.fromisoformat(today) - timedelta(days=KEEP_DAYS)).date().isoformat()
+        rows = [seed_row(r) for r in merged.get("rows") or []
+                if isinstance(r, dict) and r.get("url") and r.get("key") and (r.get("date") or "") >= earliest]
+        if not rows:
+            continue
+        write_snapshot(Path(out_dir) / f"{city}.json", {"city": city, "exportedAt": now.isoformat(), "keepDays": KEEP_DAYS,
+                                                       "fields": list(SEED_FIELDS), "homes": len(rows), "rows": rows})
+        counts[city] = len(rows)
+    return counts
+
+
+def import_seed(seed_dir, root, now=None, cities=CITIES):
+    """Add seed homes the merged file does not already hold (same key or a shared URL), marked `seeded`.
+
+    A home the harvester has is never overwritten, homes past KEEP_DAYS or reported off the market are skipped, and
+    importing twice adds nothing. A later read of the same home replaces the stub (merge_city's carry_forward)."""
+    now = now or datetime.now(timezone.utc)
+    added = {}
+    for city in cities:
+        seed = read_snapshot(Path(seed_dir) / f"{city}.json")
+        if not seed.get("rows"):
+            continue
+        path = Path(root) / city / "listings.json"
+        merged = read_snapshot(path) or {"status": "ready", "city": city, "asOf": now.isoformat(), "publishers": {}, "rows": []}
+        rows = merged.setdefault("rows", [])
+        _, today = window(city, now)
+        earliest = (datetime.fromisoformat(today) - timedelta(days=KEEP_DAYS)).date().isoformat()
+        keys = {r.get("key") for r in rows if isinstance(r, dict)}
+        urls = set().union(*(_urls(r) for r in rows if isinstance(r, dict))) | set(merged.get("offMarket") or {})
+        n = 0
+        for r in seed["rows"]:
+            if (not isinstance(r, dict) or not r.get("url") or not r.get("key") or (r.get("date") or "") < earliest
+                    or not valid_price(r.get("price")) or r["key"] in keys or _urls(r) & urls):
+                continue
+            rows.append({**{k: r[k] for k in SEED_FIELDS + ("source",) if r.get(k) is not None},
+                         "sources": [e for e in r.get("sources") or [] if isinstance(e, dict)], "seeded": True})
+            keys.add(r["key"])
+            urls |= _urls(r)
+            n += 1
+        if n:
+            rows.sort(key=lambda x: (x.get("date") or "", x.get("address") or ""), reverse=True)
+            merged.update(homes=len(rows), entries=sum(len(x.get("sources") or []) for x in rows),
+                          seeded=sum(1 for x in rows if x.get("seeded")))
+            write_snapshot(path, merged)
+        added[city] = n
+    return added
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--export-seed", type=Path, metavar="DIR", help="write a slimmed seed of the merged listings and stop")
+    parser.add_argument("--import-seed", type=Path, metavar="DIR", help="add a seed's homes to the merged listings and stop")
     parser.add_argument("--city", choices=CITIES)
     parser.add_argument("--source", choices=PROVIDERS, help="read this publisher now, ignoring the rotation and cool-downs")
     parser.add_argument("--details", default=20, type=int, help="maximum extra property pages per city, per run")
     parser.add_argument("--output", type=Path, default=Path("web/public/data"))
     args = parser.parse_args()
+    if args.export_seed or args.import_seed:
+        chosen = [args.city] if args.city else list(CITIES)
+        if args.export_seed:
+            print(f"seed written to {args.export_seed}: {export_seed(args.output, args.export_seed, cities=chosen)}")
+        else:
+            print(f"seed homes added: {import_seed(args.import_seed, args.output, cities=chosen)}")
+        sys.exit(0)
     if args.details < 0:
         parser.error("--details must be nonnegative")
     supported = getattr(PROVIDERS.get(args.source), "PATHS", CITIES)

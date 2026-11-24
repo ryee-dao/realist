@@ -282,6 +282,12 @@ def signal_items(signals):
     return plus, minus, [t["text"] for t in tags]
 
 
+def finding_label(f):
+    """"Missing fixtures (faucet)" when the finding names its specific thing, else the plain defect label."""
+    label = DEFECTS.get(f.get("type"), str(f.get("type", "")).replace("_", " ").capitalize())
+    return f"{label} ({f['item']})" if f.get("item") else label
+
+
 def photo_summary(photo):
     """Findings, crops and the minus items from photo analysis (Philadelphia). Never a clean bill: absence of
     findings is reported only as what the photos showed."""
@@ -294,9 +300,11 @@ def photo_summary(photo):
     for kind, found in by_type.items():
         rooms = sum(f.get("rooms") or 1 for f in found)
         label = DEFECTS.get(kind, str(kind).replace("_", " ").capitalize())
-        minus.append({"text": f"{label} · {_plural(rooms, 'room')}", "kind": "photo",
+        items = list(dict.fromkeys(f["item"] for f in found if f.get("item")))
+        named = f"{label} ({', '.join(items[:3])})" if items else label
+        minus.append({"text": f"{named} · {_plural(rooms, 'room')}", "kind": "photo",
                       "why": "; ".join(f"{str(f.get('room', '')).replace('_', ' ')}: {f.get('evidence', '')}" for f in found)})
-        crops += [{"src": c, "label": label} for f in found for c in f.get("crops") or []]
+        crops += [{"src": c, "label": finding_label(f)} for f in found for c in f.get("crops") or []]
     editing = photo.get("editing") or {}
     if editing.get("labelled"):
         minus.append({"text": "Photos virtually staged (labelled)", "kind": "photo",
@@ -502,7 +510,7 @@ def detail_for(card, row, tag, sale, ctx):
     photo = (tag or {}).get("photo") if ctx["photoCity"] else None
     if photo:
         out["photo"] = {
-            "findings": [{"type": f.get("type"), "label": DEFECTS.get(f.get("type"), str(f.get("type", "")).replace("_", " ").capitalize()),
+            "findings": [{"type": f.get("type"), "label": finding_label(f), "item": f.get("item"),
                           "room": str(f.get("room") or "").replace("_", " "), "rooms": f.get("rooms") or 1,
                           "confidence": f.get("confidence"), "evidence": f.get("evidence"), "crops": f.get("crops") or []}
                          for f in photo.get("findings") or []],

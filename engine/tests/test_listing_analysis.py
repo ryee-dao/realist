@@ -371,7 +371,7 @@ class CropAndRetentionTests(unittest.TestCase):
             made = la.make_crops(tmp, files, tags, Path(tmp, "crops"), la.pillow_cropper(FakeImage))
             self.assertEqual(made, 3)
             self.assertEqual([bool(d.get("crop")) for d in tags["defects"]], [True, False, True, True, False, False])
-            self.assertEqual(FakeImage.crops[0], (100, 80, 300, 240))
+            self.assertEqual(FakeImage.crops[0], (100, 60, 300, 260))   # 200x160 box grown to the 200 px minimum
             self.assertEqual(len(os.listdir(Path(tmp, "crops"))), 1)  # same-size fake crops: identical bytes, one hash
             data = Path(tmp, "crops", tags["defects"][0]["crop"]).read_bytes()
             self.assertLessEqual(max(eval(data[3:])), la.CROP_MAX_SIDE)
@@ -488,7 +488,7 @@ class MagickAndSourceTests(unittest.TestCase):
             src.write_bytes(png(1000, 800))
             crop = la.magick_cropper(shutil.which("convert"))
             for box, size in (({"x": 0.25, "y": 0.25, "w": 0.5, "h": 0.5}, "320 256"),
-                              ({"x": 0.1, "y": 0.1, "w": 0.2, "h": 0.1}, "200 80")):
+                              ({"x": 0.1, "y": 0.1, "w": 0.2, "h": 0.1}, "200 200")):   # grown to 200 px
                 data = crop(src, box)
                 self.assertTrue(data.startswith(b"\xff\xd8"))
                 out = Path(tmp, "out.jpg")
@@ -821,7 +821,7 @@ class FindingTests(unittest.TestCase):
             self.assertEqual((len(p["defects"]), p["findingCount"]), (4, 2))
             self.assertEqual([len(f["crops"]) for f in p["findings"]], [2, 2])
             self.assertTrue(all(c.startswith("analysis/crops/philadelphia/") for f in p["findings"] for c in f["crops"]))
-            self.assertEqual(set(p["findings"][0]), {"type", "room", "rooms", "confidence", "photos", "evidence",
+            self.assertEqual(set(p["findings"][0]), {"type", "item", "room", "rooms", "confidence", "photos", "evidence",
                                                      "approximate", "positions", "crops"})
 
 
@@ -893,7 +893,7 @@ class LedgerAndModeTests(unittest.TestCase):
         mode, why = la.decide_mode([entry(1, 0.61)], NOW, budget_5h=1.0)
         self.assertEqual(mode, "slow")
         self.assertIn("estimate of this tagger's own usage", why)
-        week = [entry(24 * d, 1.0) for d in range(1, 6)]                    # $5 of $10 over the week
+        week = [entry(24 * d, 1.4) for d in range(1, 6)]                    # $7 of $10 over the week
         self.assertEqual(la.decide_mode(week, NOW, budget_7d=10.0)[0], "slow")
         self.assertEqual(la.decide_mode([entry(1, 0.9, "codex")], NOW, budget_5h=1.0)[0], "normal")  # Claude budget only
 
@@ -904,7 +904,7 @@ class LedgerAndModeTests(unittest.TestCase):
         mode, why = la.decide_mode([high], NOW)
         self.assertEqual(mode, "slow")
         self.assertIn("reported by the CLI", why)
-        week = entry(1, 0.0, rateLimits={"seven_day": {"used_percentage": 51}})
+        week = entry(1, 0.0, rateLimits={"seven_day": {"used_percentage": 66}})
         self.assertEqual(la.decide_mode([week], NOW)[0], "slow")
 
     def test_cool_down(self):
@@ -1095,6 +1095,163 @@ class BackendTests(unittest.TestCase):
             la.run_compare(root, "philadelphia", {"claude": FakeBackend([]), "codex": again}, 5,
                            loader=lambda u: (JPEG, "jpg"), now=NOW, log=lambda *_: None)
             self.assertEqual(again.prompts, [])
+
+
+class CropSizeTests(unittest.TestCase):
+    def test_tiny_box_grows_around_its_centre(self):
+        # the real case: w 0.054, h 0.041 of a 1024 x 683 photo
+        box = {"x": 0.40, "y": 0.50, "w": 0.054, "h": 0.041}
+        l, t, r, b = la.crop_rect(box, 1024, 683)
+        w, h = r - l, b - t
+        self.assertGreaterEqual(min(w, h), 199)                         # >= 200 px (rounding)
+        self.assertGreaterEqual(min(w, h), 0.18 * 683)
+        self.assertLessEqual(max(w, h) / min(w, h), 2.0)
+        self.assertLessEqual(w * h, 0.25 * 1024 * 683 + 2048)
+        cx, cy = (0.40 + 0.027) * 1024, (0.50 + 0.0205) * 683
+        self.assertAlmostEqual((l + r) / 2, cx, delta=1)                # centred on the defect
+        self.assertAlmostEqual((t + b) / 2, cy, delta=1)
+
+    def test_clamped_sliver_and_cap(self):
+        l, t, r, b = la.crop_rect({"x": 0.97, "y": 0.0, "w": 0.03, "h": 0.02}, 1000, 800)    # corner
+        self.assertEqual((r, t), (1000, 0))
+        self.assertGreaterEqual(min(r - l, b - t), 199)
+        l, t, r, b = la.crop_rect({"x": 0.1, "y": 0.45, "w": 0.6, "h": 0.03}, 1000, 800)      # sliver
+        self.assertLessEqual((r - l) / (b - t), 2.0 + 1e-6)
+        self.assertLessEqual((r - l) * (b - t), 0.25 * 1000 * 800 + 1000)
+        big = {"x": 0.2, "y": 0.2, "w": 0.5, "h": 0.5}                  # the model's own box is never shrunk
+        self.assertEqual(la.crop_rect(big, 1000, 800), (200, 160, 700, 560))
+        # a small image: no upscaling; the quarter-of-the-photo cap wins over 200 px, never below 18% of the short side
+        l, t, r, b = la.crop_rect({"x": 0.5, "y": 0.5, "w": 0.01, "h": 0.01}, 300, 150)
+        self.assertGreaterEqual(min(r - l, b - t), 0.18 * 150)
+        self.assertLessEqual((r - l) * (b - t), 0.25 * 300 * 150 + 300)
+
+    def test_both_backends_use_the_minimum(self):
+        FakeImage.crops = []
+        la.crop_bytes(Path("/x.jpg"), {"x": 0.4, "y": 0.5, "w": 0.054, "h": 0.041}, FakeImage)
+        l, t, r, b = FakeImage.crops[0]
+        self.assertGreaterEqual(min(r - l, b - t), 199)
+        calls = []
+
+        def run(cmd, **kw):
+            calls.append(cmd)
+            if "-format" in cmd:
+                return subprocess.CompletedProcess(cmd, 0, stdout=b"1000 800", stderr=b"")
+            return subprocess.CompletedProcess(cmd, 0, stdout=b"\xff\xd8\xffjpeg", stderr=b"")
+        la.magick_cropper("/usr/bin/convert", run=run)(Path("/x/p.jpg"), {"x": 0.4, "y": 0.5, "w": 0.054, "h": 0.041})
+        geometry = calls[1][calls[1].index("-crop") + 1]
+        w, h = map(int, geometry.split("+")[0].split("x"))
+        self.assertGreaterEqual(min(w, h), 199)
+
+    def test_old_small_crops_recut_when_source_available(self):
+        rows = [{"url": "https://a.test/r", "address": "1 Main St Philadelphia, PA 19123", "date": "2026-11-23",
+                 "price": 200000, "photos": [f"https://img.test/r{i}.jpg" for i in range(4)]}]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_city(root, "philadelphia", rows)
+            subject = la.photo_subject(rows[0])
+            tags = good_tags(4, defects=[dict(defect("missing_kitchen_or_bath_fixtures", 2, 0.8,
+                                                      {"x": 0.4, "y": 0.5, "w": 0.054, "h": 0.041}),
+                                              crop="old.jpg", gallery_position=2),
+                                         dict(defect("peeling_paint", 3, 0.8, {"x": 0.4, "y": 0.5, "w": 0.054, "h": 0.041}),
+                                              crop="gone.jpg", gallery_position=3)])
+            cache = {"https://a.test/r": {"url": "https://a.test/r", "date": "2026-11-23", "model": la.DEFAULT_MODEL,
+                                          "promptVersion": "listing-tags-v4", "positions": [0, 1, 2, 3], "tags": tags,
+                                          "key": la.cache_key(subject, la.DEFAULT_MODEL, "listing-tags-v4")}}
+            seen = []
+
+            def loader(url):
+                seen.append(url)
+                if url.endswith("r3.jpg"):
+                    raise OSError("gone from the publisher")
+                return JPEG, "jpg"
+            cut = lambda path, box: b"\xff\xd8\xff" + repr(box).encode()
+            n = la.recut_small_crops(cache, rows, "philadelphia", root / "crops", cut, None, loader, log=lambda *_: None)
+            self.assertEqual(n, 1)
+            fixed, kept = cache["https://a.test/r"]["tags"]["defects"]
+            self.assertNotEqual(fixed["crop"], "old.jpg")
+            self.assertEqual(fixed["cropVersion"], la.CROP_VERSION)
+            self.assertEqual((kept["crop"], kept["recutTried"]), ("gone.jpg", True))   # source unavailable: left as is
+            seen.clear()
+            self.assertEqual(la.recut_small_crops(cache, rows, "philadelphia", root / "crops", cut, None, loader,
+                                                  log=lambda *_: None), 0)
+            self.assertEqual(seen, [])                                                  # nothing fetched twice
+
+
+class ItemAndRepairTests(unittest.TestCase):
+    def test_item_validation(self):
+        self.assertEqual(la.clean_item("Faucet"), "faucet")
+        self.assertEqual(la.clean_item(" ceiling   tile "), "ceiling tile")
+        for bad in ("", "sink!", "a b c d", "x" * 31, "<b>tile</b>", "family room", 3, None, "tile2"):
+            self.assertIsNone(la.clean_item(bad))
+        d = defect("missing_kitchen_or_bath_fixtures", 0, 0.8, None)
+        clean = la.validate_tags(good_tags(2, defects=[dict(d, item="Faucet"), dict(d, item="drop table;")]), 2)
+        self.assertEqual([x["item"] for x in clean["defects"]], ["faucet", None])
+        self.assertEqual(la.validate_tags(good_tags(2, defects=[d]), 2)["defects"][0]["item"], None)   # older shape
+        with self.assertRaises(ValueError):
+            la.validate_tags(good_tags(2, defects=[dict(d, item="faucet", extra=1)]), 2)
+        self.assertIn("item", la.SCHEMA["properties"]["defects"]["items"]["required"])
+
+    def test_item_through_findings_and_cards(self):
+        from engine import listing_cards as lc
+        tags = {"photos": [photo(0, "kitchen", "c0:kitchen-1"), photo(1, "bathroom", "c0:bathroom-1")],
+                "defects": [dict(det("missing_kitchen_or_bath_fixtures", 0, 0.9), item="faucet"),
+                            dict(det("missing_kitchen_or_bath_fixtures", 1, 0.7), item="sink"),
+                            det("peeling_paint", 1, 0.6)]}
+        found = la.group_findings(tags, {"type": "Single family"})
+        self.assertEqual({(f["type"], f["item"]) for f in found},
+                         {("missing_kitchen_or_bath_fixtures", "faucet"), ("missing_kitchen_or_bath_fixtures", "sink"),
+                          ("peeling_paint", None)})
+        self.assertEqual(lc.finding_label({"type": "missing_kitchen_or_bath_fixtures", "item": "faucet"}),
+                         "Missing fixtures (faucet)")
+        self.assertEqual(lc.finding_label({"type": "peeling_paint", "item": None}), "Peeling paint")
+        summary, minus = lc.photo_summary({"findings": found, "findingCount": 3})
+        self.assertIn("Missing fixtures (faucet, sink) · 2 rooms", [m["text"] for m in minus])
+
+    def test_validation_repairs(self):
+        tags = good_tags(3)
+        tags["photos"] = [{"index": 0, "room": "kitchen", "room_id": "Kitchen #1", "quality": "clear"},
+                          {"index": 1, "room": "kitchen", "room_id": "kitchen-1", "quality": "clear"},
+                          {"index": 1, "room": "bedroom", "room_id": "bedroom-1", "quality": "clear"},
+                          {"index": 7, "room": "bedroom", "room_id": "bedroom-1", "quality": "clear"}]
+        repairs = []
+        clean = la.validate_tags(tags, 3, repairs)
+        self.assertEqual([(p["index"], p["room_id"]) for p in clean["photos"]], [(0, "unsure"), (1, "kitchen-1")])
+        self.assertEqual(len(repairs), 3)
+
+    def test_v4_entries_not_retagged_older_ones_are(self):
+        rows = PriorityTests().rows()[:2]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_city(root, "philadelphia", rows)
+            cache = {}
+            for row, version in zip(rows, ("listing-tags-v4", "listing-tags-v3")):
+                subject = la.photo_subject(row)
+                cache[row["url"]] = {"url": row["url"], "date": row["date"], "model": la.DEFAULT_MODEL, "positions": [0],
+                                     "promptVersion": version, "tags": good_tags(1),
+                                     "key": la.cache_key(subject, la.DEFAULT_MODEL, version)}
+            (root / "analysis").mkdir()
+            (root / "analysis" / "philadelphia.json").write_text(json.dumps({"results": cache}))
+            _, plan = la.analyse_city(root, "philadelphia", dry_run=True, now=NOW, log=lambda *_: None)
+            self.assertEqual([(p["url"], p["reason"]) for p in plan["planned"]],
+                             [(rows[1]["url"], "re-tag: tagged with listing-tags-v3")])
+
+
+class RateLimitShapeTests(unittest.TestCase):
+    def test_unified_windows_from_the_first_real_run(self):
+        info = {"status": "allowed", "unifiedWindows": {"five_hour": {"utilization": 0, "resetsAt": 1},
+                                                        "seven_day": {"utilization": 0.49, "resetsAt": 2}}}
+        windows = la.rate_limit_windows([info])
+        self.assertEqual((windows["five_hour"]["utilization"], windows["seven_day"]["utilization"]), (0, 0.49))
+        self.assertEqual(set(la.rate_limit_windows([{"rate_limit_type": "five_hour", "utilization": 0.7}])), {"five_hour"})
+        listed = la.rate_limit_windows([{"unifiedWindows": [{"window": "seven_day", "utilization": 0.6}]}])
+        self.assertEqual(listed["seven_day"]["utilization"], 0.6)
+        # as the first run stored it in the ledger (keyed "unknown"), the real figures still decide, not the estimate
+        stored = entry(1, 0.95, rateLimits={"unknown": info})
+        mode, why = la.decide_mode([stored], NOW, budget_5h=1.0)
+        self.assertEqual(mode, "normal")
+        self.assertIn("weekly 49%", why)
+        high = entry(1, 0.0, rateLimits={"unknown": dict(info, unifiedWindows={"seven_day": {"utilization": 0.55}})})
+        self.assertEqual(la.decide_mode([high], NOW)[0], "slow")
 
 
 class CLITests(unittest.TestCase):

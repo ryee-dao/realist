@@ -21,8 +21,7 @@
 .lc-pager-n { display: inline-flex; align-items: center; gap: 4px; }
 .lc-pager .ghost.on { background: var(--brand-soft); color: var(--brand-ink); border-color: var(--brand); }
 /* weights */
-.lc-weights { align-self: center; }
-.lc-weights[open] { flex-basis: 100%; }
+.lc-weights { flex-basis: 100%; }
 .lc-weights summary { cursor: pointer; font-size: 12.5px; color: var(--text-2); width: fit-content; }
 .lc-weights summary b { color: var(--text); font-weight: 600; }
 .lc-weights-body { display: flex; flex-direction: column; gap: 10px; padding-top: 10px; }
@@ -124,10 +123,10 @@
 .lc-pin.dot { font-size: 0; padding: 0; width: 11px; height: 11px; border-width: 1.5px; }
 .lc-pin-wrap.on .lc-pin.dot { font-size: 11px; padding: 1px 6px; width: auto; height: auto; }
 /* pins of other pages: small faded dots */
-.lc-pin.off { opacity: 0.45; box-shadow: none; }
-.lc-pin.off.dot { width: 8px; height: 8px; }
+.lc-pin.off { opacity: 0.9; box-shadow: none; }
+.lc-pin.off.dot { width: 10px; height: 10px; }
 .lc-pin-wrap.on .lc-pin.off { opacity: 1; }
-.lc-legend .lc-pin.dot { display: inline-block; width: 8px; height: 8px; padding: 0; }
+.lc-legend .lc-pin.dot { display: inline-block; width: 10px; height: 10px; padding: 0; }
 .lc-f.lc-sort { margin-left: auto; flex-direction: row; align-items: center; gap: 6px; }
 .lc-f.lc-sort select { max-width: none; }
 

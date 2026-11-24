@@ -137,7 +137,7 @@ from tempfile import NamedTemporaryFile
 from .photo_hold import HOLD_DIR, PhotoHold
 
 DEFAULT_MODEL = "haiku"           # Claude Code alias for the current Haiku model
-PROMPT_VERSION = "listing-tags-v4"   # v3: staging labels, edit suspicions, empty/furnished pairs; v4: room ids
+PROMPT_VERSION = "listing-tags-v5"   # v3: staging labels, edit suspicions, empty/furnished pairs; v4: room ids
 USER_AGENT = "Realist/2.0 (public housing data research)"
 CITY_IDS = ("philadelphia", "nyc", "chicago")
 PHOTO_CITIES = {"philadelphia"}   # photo tagging is Philadelphia-only for now
@@ -718,8 +718,10 @@ SCHEMA = {
         "exterior_condition": _tag(["good", "fair", "poor", "not_visible"]),
         "photo_set_quality": _tag(["professional", "adequate", "poor"]),
         "defects": {"type": "array", "items": {
-            "type": "object", "additionalProperties": False, "required": ["type", "photo_index", "evidence", "confidence", "box"],
-            "properties": {"type": {"type": "string", "enum": list(DEFECT_WEIGHTS)}, "photo_index": {"type": "integer"},
+            "type": "object", "additionalProperties": False,
+            "required": ["type", "item", "photo_index", "evidence", "confidence", "box"],
+            "properties": {"type": {"type": "string", "enum": list(DEFECT_WEIGHTS)}, "item": {"type": "string"},
+                           "photo_index": {"type": "integer"},
                            "evidence": {"type": "string"}, "confidence": {"type": "number"},
                            "box": {"anyOf": [{"type": "null"}, {
                                "type": "object", "additionalProperties": False, "required": ["x", "y", "w", "h"],
@@ -757,7 +759,7 @@ What to tag
 - staging: staged (furniture placed for photos), furnished_occupied (personal belongings in everyday use), vacant_empty, mixed, under_construction, or not_visible.
 - exterior_condition: the building's own exterior (facade, roof line, porch, windows, yard of this lot): good, fair, poor, not_visible.
 - photo_set_quality: professional (well lit, level, wide-angle, consistent), adequate, or poor (dark, blurry, phone snapshots, few useful rooms).
-- defects: every defect you can actually see, one entry each, with the photo number it appears in, a short evidence phrase that describes what is visible ("brown ring stain on bedroom ceiling near light fixture"), and a confidence. Types: water_stain_ceiling, water_stain_wall, visible_mould, peeling_paint, damaged_flooring, damaged_ceiling_or_drywall, missing_kitchen_or_bath_fixtures, broken_windows_or_doors, exposed_wiring, pest_signs, fire_or_smoke_damage, roof_damage, structural_cracks, debris_or_cleanout_needed, other_damage. pest_signs is rare: use it only for clearly visible droppings, nests, gnaw damage or insects, never as a guess from general dirt or age. Shadows, reflections, wood grain, rugs, deliberate design features and staging props are not defects. An empty list is the right answer when no defect is visible. box locates the defect in its photo as fractions of the image width and height (0 to 1): x and y are the top-left corner, w and h the size. Give the tightest box that contains the defect with a little surrounding context, normally well under a quarter of the image. Use null when you cannot point to a specific region (for example a general impression of wear across the room).
+- defects: every defect you can actually see, one entry each, with the photo number it appears in, a short evidence phrase that describes what is visible ("brown ring stain on bedroom ceiling near light fixture"), and a confidence. Types: water_stain_ceiling, water_stain_wall, visible_mould, peeling_paint, damaged_flooring, damaged_ceiling_or_drywall, missing_kitchen_or_bath_fixtures, broken_windows_or_doors, exposed_wiring, pest_signs, fire_or_smoke_damage, roof_damage, structural_cracks, debris_or_cleanout_needed, other_damage. pest_signs is rare: use it only for clearly visible droppings, nests, gnaw damage or insects, never as a guess from general dirt or age. Shadows, reflections, wood grain, rugs, deliberate design features and staging props are not defects. An empty list is the right answer when no defect is visible. item names the specific thing in 1 to 3 plain words, such as "faucet", "sink", "ceiling tile", "window pane", "floorboards", "stair railing"; use an empty string when nothing more specific than the type can be named. box locates the defect in its photo as fractions of the image width and height (0 to 1): x and y are the top-left corner, w and h the size. Give the tightest box that contains the defect with a little surrounding context, normally well under a quarter of the image. Use null when you cannot point to a specific region (for example a general impression of wear across the room).
 - description_claims: up to five concrete condition claims made in the description (for example "new roof 2024", "renovated kitchen", "needs TLC", "hardwood floors throughout") and whether the photos are consistent with the claim, contradict it, or do not show it.
 
 Confidence
@@ -1058,11 +1060,27 @@ def _box(box):
     return {"x": round(x, 4), "y": round(y, 4), "w": round(min(w, 1 - x), 4), "h": round(min(h, 1 - y), 4)}
 
 
-def validate_tags(tags, n_photos):
+_ITEM = re.compile(r"[a-z]+(?: [a-z]+){0,2}")
+
+
+def clean_item(value):
+    """A defect's specific thing ("faucet", "ceiling tile"): 1-3 lowercase words of letters, at most 30 characters,
+    or None. Model text shown on the site, so anything else is dropped rather than shown."""
+    if not isinstance(value, str):
+        return None
+    text = re.sub(r"\s+", " ", value).strip().lower()
+    if not text or len(text) > 30 or not _ITEM.fullmatch(text) or _SENSITIVE.search(text):
+        return None
+    return text
+
+
+def validate_tags(tags, n_photos, repairs=None):
     """Strictly check the model output against SCHEMA; return a clean copy or raise ValueError.
 
     Enums, numbers in range, photo numbers that exist, no extra keys. Defects and claims whose text
-    mentions people or the area are dropped (fair-housing rule), not passed through.
+    mentions people or the area are dropped (fair-housing rule), not passed through. Two cheap repairs instead of
+    discarding the listing, each noted in ``repairs``: a per-photo entry with an out-of-range or repeated index is
+    dropped (that photo then counts as not described), and a malformed room_id becomes "unsure".
     """
     props = SCHEMA["properties"]
     if not isinstance(tags, dict) or set(tags) != set(SCHEMA["required"]):
@@ -1082,10 +1100,15 @@ def validate_tags(tags, n_photos):
     for p in tags["photos"]:
         if not isinstance(p, dict) or set(p) != {"index", "room", "room_id", "quality"} or type(p["index"]) is not int:
             raise ValueError("photos: malformed entry")
+        p = dict(p)
         if not isinstance(p["room_id"], str) or not _ROOM_ID.fullmatch(p["room_id"]):
-            raise ValueError("photos: malformed room_id")
+            p["room_id"] = "unsure"
+            if repairs is not None:
+                repairs.append(f"photo {p['index']}: malformed room_id set to unsure")
         if not 0 <= p["index"] < n_photos or p["index"] in seen:
-            raise ValueError("photos: index out of range or repeated")
+            if repairs is not None:
+                repairs.append(f"photo entry {p['index']}: index out of range or repeated, dropped")
+            continue
         if p["room"] not in photo_enum["room"]["enum"] or p["quality"] not in photo_enum["quality"]["enum"]:
             raise ValueError("photos: unknown room or quality")
         seen.add(p["index"])
@@ -1095,15 +1118,15 @@ def validate_tags(tags, n_photos):
     if not isinstance(tags["defects"], list):
         raise ValueError("defects: not a list")
     for d in tags["defects"]:
-        if not isinstance(d, dict) or set(d) != {"type", "photo_index", "evidence", "confidence", "box"}:
+        if not isinstance(d, dict) or set(d) - {"item"} != {"type", "photo_index", "evidence", "confidence", "box"}:
             raise ValueError("defects: malformed entry")
         if d["type"] not in DEFECT_WEIGHTS or type(d["photo_index"]) is not int or not 0 <= d["photo_index"] < n_photos:
             raise ValueError("defects: unknown type or photo")
         evidence = _short(d["evidence"])
         if _SENSITIVE.search(evidence):
             continue
-        clean["defects"].append({"type": d["type"], "photo_index": d["photo_index"], "evidence": evidence,
-                                 "confidence": _confidence(d["confidence"]), "box": _box(d["box"])})
+        clean["defects"].append({"type": d["type"], "item": clean_item(d.get("item")), "photo_index": d["photo_index"],
+                                 "evidence": evidence, "confidence": _confidence(d["confidence"]), "box": _box(d["box"])})
     clean["description_claims"] = []
     statuses = props["description_claims"]["items"]["properties"]["status"]["enum"]
     if not isinstance(tags["description_claims"], list):
@@ -1301,7 +1324,9 @@ def group_findings(tags, facts=None):
             rooms = 1
             if g["legacy"]:
                 rooms = min(n_photos, cap if cap is not None else ROOM_CAP_UNKNOWN)
-            findings.append({"type": dtype, "room": room, "rooms": rooms, "confidence": best["confidence"],
+            items = Counter(x.get("item") for x in dets if x.get("item"))
+            item = best.get("item") or (items.most_common(1)[0][0] if items else None)
+            findings.append({"type": dtype, "item": item, "room": room, "rooms": rooms, "confidence": best["confidence"],
                              "photos": n_photos, "positions": positions, "evidence": best.get("evidence", ""),
                              "crops": [x["crop"] for x in sorted(dets, key=lambda x: -x["confidence"]) if x.get("crop")],
                              "approximate": g["legacy"] or cap is not None and len(items) > 1})
@@ -1412,9 +1437,8 @@ def magick_cropper(binary, run=subprocess.run, timeout=20):
         if size.returncode:
             raise ValueError("identify failed")
         width, height = (int(v) for v in size.stdout.decode().split()[:2])
-        left, top = int(box["x"] * width), int(box["y"] * height)
-        w = max(1, min(width, round((box["x"] + box["w"]) * width)) - left)
-        h = max(1, min(height, round((box["y"] + box["h"]) * height)) - top)
+        left, top, right, bottom = crop_rect(box, width, height)
+        w, h = right - left, bottom - top
         side = CROP_MAX_SIDE
         out = run([binary] + limits + [source, "-crop", f"{w}x{h}+{left}+{top}", "+repage",
                                        "-resize", f"{side}x{side}>", "-strip", "-quality", "80", "jpeg:-"],
@@ -1477,15 +1501,43 @@ def load_cropper():
     return magick_cropper(binary) if binary else None
 
 
+CROP_MIN_PX = 200                 # a crop is at least this many source pixels on its shorter side...
+CROP_MIN_FRACTION = 0.18          # ...and at least this share of the image's shorter side
+CROP_MAX_ASPECT = 2.0             # no slivers
+CROP_MAX_EXPANDED_AREA = 0.25     # expansion stops at a quarter of the photo (never smaller than the model's own box)
+CROP_VERSION = 2                  # 2: minimum-size crops
+
+
+def crop_rect(box, width, height):
+    """Pixel rectangle (left, top, right, bottom) to cut for a normalised box: the box expanded around its centre to
+    the minimum crop size, aspect at most CROP_MAX_ASPECT, area at most CROP_MAX_EXPANDED_AREA, clamped to the image.
+    Nothing is upscaled. On a small image the quarter-of-the-photo cap wins over CROP_MIN_PX."""
+    bw, bh = box["w"] * width, box["h"] * height
+    cx, cy = (box["x"] + box["w"] / 2) * width, (box["y"] + box["h"] / 2) * height
+    short = min(width, height)
+    min_side = min(short, max(CROP_MIN_PX, CROP_MIN_FRACTION * short))
+    w, h = max(bw, min_side), max(bh, min_side)
+    if w > CROP_MAX_ASPECT * h:
+        h = w / CROP_MAX_ASPECT
+    if h > CROP_MAX_ASPECT * w:
+        w = h / CROP_MAX_ASPECT
+    cap = CROP_MAX_EXPANDED_AREA * width * height
+    if w * h > cap:
+        k = math.sqrt(cap / (w * h))
+        w, h = max(bw, w * k), max(bh, h * k)
+    w, h = min(w, width), min(h, height)
+    left = min(max(cx - w / 2, 0), width - w)
+    top = min(max(cy - h / 2, 0), height - h)
+    l, t = int(round(left)), int(round(top))
+    return l, t, max(l + 1, min(width, int(round(left + w)))), max(t + 1, min(height, int(round(top + h))))
+
+
 def crop_bytes(path, box, Image):
-    """JPEG bytes of the box region, longest side at most CROP_MAX_SIDE; a fresh image, so no metadata is carried."""
+    """JPEG bytes of the (expanded) box region, longest side at most CROP_MAX_SIDE; a fresh image, so no metadata."""
     with Image.open(path) as im:
         im.seek(0)
         width, height = im.size
-        left, top = int(box["x"] * width), int(box["y"] * height)
-        right = max(left + 1, min(width, round((box["x"] + box["w"]) * width)))
-        bottom = max(top + 1, min(height, round((box["y"] + box["h"]) * height)))
-        part = im.crop((left, top, right, bottom)).convert("RGB")
+        part = im.crop(crop_rect(box, width, height)).convert("RGB")
     part.thumbnail((CROP_MAX_SIDE, CROP_MAX_SIDE))
     clean = Image.new("RGB", part.size)
     clean.paste(part)
@@ -1521,7 +1573,7 @@ def make_crops(workdir, files, tags, crop_dir, cropper, min_confidence=CROP_MIN_
         target = Path(crop_dir, name)
         if not target.exists():
             target.write_bytes(data)
-        d["crop"] = name
+        d["crop"], d["cropVersion"] = name, CROP_VERSION
         made += 1
     return made
 
@@ -1575,7 +1627,7 @@ def analyse_photos(row, backend, k, loader=download_image, crop_dir=None, croppe
     full photos are deleted on return."""
     positions = choose_photos(row.get("photos") or [], k)
     started = time.monotonic()
-    usage, cost, served, calls, limits = Counter(), 0.0, set(), 0, {}
+    usage, cost, served, calls, limits, repairs = Counter(), 0.0, set(), 0, {}, []
     with tempfile.TemporaryDirectory(prefix="realist-photos-") as workdir:
         files = []
         for pos in positions:
@@ -1596,13 +1648,12 @@ def analyse_photos(row, backend, k, loader=download_image, crop_dir=None, croppe
             calls += 1
             if "structured_output" not in out:
                 raise ValueError("no structured output (the model may have declined)")
-            parts.append((validate_tags(out["structured_output"], len(batch)), start))
+            parts.append((validate_tags(out["structured_output"], len(batch), repairs), start))
             usage.update({key: (out.get("usage") or {}).get(key, 0) for key in
                           ("input_tokens", "output_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")})
             cost += out.get("total_cost_usd") or 0
             served.update((out.get("modelUsage") or {}).keys())
-            for info in out.get("rate_limits") or []:
-                limits[str(info.get("rate_limit_type") or info.get("rateLimitType") or "unknown")] = info
+            limits.update(rate_limit_windows(out.get("rate_limits") or []))
         tags = merge_tags(parts)
         if crop_dir and cropper is not None and not crops_disabled(row.get("source")):
             make_crops(workdir, files, tags, crop_dir, cropper, crop_confidence)
@@ -1614,7 +1665,15 @@ def analyse_photos(row, backend, k, loader=download_image, crop_dir=None, croppe
             "url": row["url"], "address": row.get("address"), "date": row.get("date"), "price": row.get("price"),
             "source": row.get("source"), "usage": dict(usage), "apiEquivalentUsd": round(cost, 6),
             "seconds": round(time.monotonic() - started, 1), "servedBy": sorted(served),
-            "backend": getattr(backend, "name", "claude"), "rateLimits": limits}
+            "backend": getattr(backend, "name", "claude"), "rateLimits": limits, "repairs": repairs}
+
+
+RETAG_BELOW = "listing-tags-v4"   # entries from earlier prompts are re-tagged after everything new; later ones are kept
+
+
+def _version(name):
+    m = re.search(r"v(\d+)$", str(name or ""))
+    return int(m.group(1)) if m else 1
 
 
 def record_valid(record, subject):
@@ -1645,6 +1704,64 @@ def result_line(r):
     defects = ", ".join(f"{t} {c:.2f}{' (crop)' if crop else ''}" for t, c, crop in r["defects"]) or "no defects"
     return (f"{r['address']}: condition {r['condition']}, score {r['score'] if r['score'] is not None else '-'}; "
             f"{r.get('findings', '?')} findings from {len(r['defects'])} detections: {defects}; {r['crops']} crops written")
+
+
+RECUT_LIMIT = 30                  # photos fetched per run to re-cut crops made before the minimum crop size
+
+
+def recut_small_crops(cache, homes, city, crop_store, cropper, hold=None, loader=download_image, limit=RECUT_LIMIT,
+                      log=print):
+    """Re-cut crops made before CROP_VERSION 2 whose box is under the minimum crop size, from the held photo or,
+    when the listing's gallery is unchanged, the publisher's photo at the same gallery position. Where neither is
+    available the old crop stays. Returns how many crops were replaced."""
+    by_url = {u: h for h in homes for u in (h.get("urls") or [h["url"]])}
+    fetched, replaced = 0, 0
+    for url, record in cache.items():
+        todo = [d for d in (record.get("tags") or {}).get("defects") or []
+                if d.get("crop") and d.get("box") and d.get("cropVersion", 1) < CROP_VERSION and not d.get("recutTried")
+                and min(d["box"]["w"], d["box"]["h"]) < CROP_MIN_FRACTION]
+        home = by_url.get(url)
+        if not todo or home is None:
+            continue
+        subject = photo_subject(home)
+        if not record_valid(record, subject):
+            continue
+        for position in sorted({d.get("gallery_position") for d in todo} - {None}):
+            if fetched >= limit:
+                return replaced
+            if not 0 <= position < len(subject["photos"]):
+                continue
+            photo_url = subject["photos"][position]
+            source = hold.loader(city, url, loader) if hold is not None else loader
+            fetched += 1
+            try:
+                body, ext = source(photo_url)
+            except (OSError, ValueError) as exc:
+                log(f"{city}: crop re-cut skipped for {record.get('address')}: {exc}")
+                for d in todo:
+                    if d.get("gallery_position") == position:
+                        d["recutTried"] = True
+                continue
+            with tempfile.TemporaryDirectory(prefix="realist-recut-") as tmp:
+                path = Path(tmp, f"photo.{ext}")
+                path.write_bytes(body)
+                for d in todo:
+                    if d.get("gallery_position") != position:
+                        continue
+                    try:
+                        data = cropper(path, d["box"])
+                    except (OSError, ValueError, subprocess.SubprocessError):
+                        d["recutTried"] = True
+                        continue
+                    name = hashlib.sha256(data).hexdigest()[:20] + ".jpg"
+                    Path(crop_store).mkdir(parents=True, exist_ok=True)
+                    if not Path(crop_store, name).exists():
+                        Path(crop_store, name).write_bytes(data)
+                    d["crop"], d["cropVersion"] = name, CROP_VERSION
+                    replaced += 1
+    if replaced:
+        log(f"{city}: re-cut {replaced} small crops to the minimum crop size")
+    return replaced
 
 
 def _strip_crops(record):
@@ -1754,7 +1871,7 @@ def _compact_photo(record, city, site_crops, facts=None, gallery_count=None, des
     cov = coverage(tags, facts or {}, gallery_count)
     score = condition_score(tags, cov["rating"], facts or {})
     site_crop = lambda name: f"analysis/crops/{city}/{name}" if Path(site_crops, name).exists() else None
-    findings = [{**{k_: f[k_] for k_ in ("type", "room", "rooms", "confidence", "photos", "evidence", "approximate")},
+    findings = [{**{k_: f[k_] for k_ in ("type", "item", "room", "rooms", "confidence", "photos", "evidence", "approximate")},
                  "positions": f["positions"], "crops": [c for c in map(site_crop, f["crops"]) if c]}
                 for f in group_findings(tags, facts or {})]
     labelled = [{"photo": gallery(x["photo_index"]), "text": x["text"]} for x in tags.get("staging_labels") or []]
@@ -1785,7 +1902,7 @@ def _compact_photo(record, city, site_crops, facts=None, gallery_count=None, des
 # ---------------------------------------------------------------------------- scheduling: usage, mode, backends
 
 SLOW_LIMIT = 5                    # listings per run in slow mode
-SLOW_5H, SLOW_7D = 0.60, 0.50     # slow down at 60% of the 5-hour or 50% of the weekly limit (or budget)
+SLOW_5H, SLOW_7D = 0.60, 0.65     # slow down at 60% of the 5-hour or 65% of the weekly limit (or budget)
 BUDGET_5H_USD = 1.00              # stand-in budgets for the ledger estimate, in the CLI's API-equivalent dollars;
 BUDGET_7D_USD = 10.00             # calibrate against /usage: they only count this tagger's own runs
 COOL_DOWN_HOURS = 5               # after a usage-limit stop with no reset time, wait this long
@@ -1827,6 +1944,44 @@ def ledger_window(entries, now, hours, backend="claude"):
             "tokens": sum((e.get("input") or 0) + (e.get("output") or 0) for e in rows), "listings": len(rows)}
 
 
+_WINDOW_NAMES = {"five_hour": "five_hour", "fivehour": "five_hour", "5h": "five_hour", "session": "five_hour",
+                 "seven_day": "seven_day", "sevenday": "seven_day", "7d": "seven_day", "weekly": "seven_day"}
+
+
+def _window_name(name):
+    return _WINDOW_NAMES.get(re.sub(r"[^a-z0-9_]", "", str(name or "").lower()).replace("__", "_"))
+
+
+def rate_limit_windows(infos):
+    """{"five_hour": {...}, "seven_day": {...}} from the CLI's rate-limit events, whatever their shape.
+
+    Seen on the first real run: ``unifiedWindows`` with ``five_hour`` / ``seven_day`` entries carrying ``utilization``.
+    The Agent SDK documents ``rate_limit_type`` + ``utilization`` on the event itself. Both are read; already-flattened
+    entries (from the ledger) pass through.
+    """
+    out = {}
+    for info in infos:
+        if not isinstance(info, dict):
+            continue
+        windows = info.get("unifiedWindows") or info.get("unified_windows") or info.get("windows")
+        if isinstance(windows, dict):
+            for name, w in windows.items():
+                if _window_name(name) and isinstance(w, dict):
+                    out[_window_name(name)] = w
+        elif isinstance(windows, list):
+            for w in windows:
+                if isinstance(w, dict):
+                    name = _window_name(w.get("window") or w.get("type") or w.get("name") or w.get("rateLimitType"))
+                    if name:
+                        out[name] = w
+        name = _window_name(info.get("rate_limit_type") or info.get("rateLimitType"))
+        if name and _utilization(info) is not None:
+            out[name] = info
+        if not name and not windows and _utilization(info) is not None and info.get("window"):
+            out.setdefault(_window_name(info["window"]) or "unknown", info)
+    return out
+
+
 def _utilization(info):
     value = info.get("utilization", info.get("used_percentage"))
     if type(value) not in (int, float):
@@ -1856,7 +2011,10 @@ def decide_mode(entries, now, budget_5h=BUDGET_5H_USD, budget_7d=BUDGET_7D_USD, 
     reported = {}
     for e in mine:
         if str(e.get("at", "")) >= recent:
-            reported.update(e.get("rateLimits") or {})
+            stored = e.get("rateLimits") or {}
+            reported.update({_window_name(k_): v for k_, v in stored.items() if _window_name(k_) and isinstance(v, dict)})
+            # Seen on the first real run: each stored entry wraps both windows in its own ``unifiedWindows``.
+            reported.update(rate_limit_windows(stored.values()))
     u5, u7 = _utilization(reported.get("five_hour", {})), _utilization(reported.get("seven_day", {}))
     if u5 is not None or u7 is not None:
         if (u5 or 0) >= SLOW_5H or (u7 or 0) >= SLOW_7D:
@@ -1933,7 +2091,7 @@ def run_compare(root, city, backends, n, *, k=PHOTOS_PER_LISTING, per_call=PHOTO
             break
         primary = record.get("backend", "claude")
         other = "codex" if primary == "claude" else "claude"
-        if record.get("promptVersion") != PROMPT_VERSION or backends.get(other) is None or url not in homes:
+        if _version(record.get("promptVersion")) < _version(RETAG_BELOW) or backends.get(other) is None or url not in homes:
             continue
         entry = store.setdefault(url, {"address": record.get("address"), "results": {}, "errors": {}})
         if other in entry["results"] or other in entry["errors"]:
@@ -2069,8 +2227,8 @@ def analyse_city(root, city, *, backend=None, model=DEFAULT_MODEL, limit=20, max
             model_for = backend_model(backends[chosen]) if backends.get(chosen) else model
             old = cache.get(home["url"])
             current = record_valid(old, subject) and old.get("model", model) in (model, model_for)
-            if not requested and current and old.get("promptVersion") == PROMPT_VERSION:
-                continue  # already tagged; --url re-tags on request
+            if not requested and current and _version(old.get("promptVersion")) >= _version(RETAG_BELOW):
+                continue  # already tagged (v4+ has room ids; v5 only adds the optional item); --url re-tags on request
             if not requested and current and mode == "slow":
                 continue  # slow mode never spends usage on re-tagging
             if not requested and current:
@@ -2162,6 +2320,10 @@ def analyse_city(root, city, *, backend=None, model=DEFAULT_MODEL, limit=20, max
             log(f"{city}:     done in {record['seconds']:.0f} s: {result_line(result)}")
 
     changed = False
+    if city in PHOTO_CITIES and backend is not None and not dry_run and cropper not in (None, "auto"):
+        n = recut_small_crops(cache, homes, city, crop_store, cropper, hold, loader, log=log)
+        report["recut"] = n
+        changed |= bool(n)
     if hold is not None and not dry_run and city in PHOTO_CITIES:
         hold.expire(city, {h["url"]: h.get("date") for h in homes}, now, log)
     if not dry_run:

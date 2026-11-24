@@ -268,6 +268,21 @@ class BuildTests(unittest.TestCase):
         lc.publish(self.root, "philadelphia", now=NOW, log=lambda *_: None)
         self.assertFalse((folder / "stale.json").exists())
 
+    def test_seeded_homes_get_plain_cards(self):
+        doc = json.loads(Path(self.root, "philadelphia/listings.json").read_text())
+        doc["rows"].append({"key": "8 PINE ST 19125", "url": "https://x/seed", "address": "8 Pine St, Philadelphia, PA 19125",
+                            "date": "2026-11-18", "price": 270000, "source": "Movoto", "sqft": 1100, "beds": 3, "zip": "19125",
+                            "lat": 39.971, "lon": -75.131, "seeded": True, "lastSeen": "2026-11-18T01:00:00+00:00",
+                            "sources": [{"provider": "movoto", "source": "Movoto", "url": "https://x/seed"}]})
+        write(self.root, "philadelphia/listings.json", doc)
+        d, by = self.cards()
+        c = by["https://x/seed"]
+        self.assertEqual(c["estimate"]["kind"], "ppsf")
+        self.assertNotIn("photo", c)
+        self.assertNotIn("signals", c)
+        self.assertEqual(c["lastSeen"], "2026-11-18")
+        self.assertEqual(d["_details"][c["detail"]]["id"], c["id"])
+
     def test_publish_writes_the_file_and_skips_cities_without_listings(self):
         doc = lc.publish(self.root, "philadelphia", now=NOW, log=lambda *_: None)
         self.assertEqual(json.loads(Path(self.root, "philadelphia/listing-cards.json").read_text())["summary"], doc["summary"])

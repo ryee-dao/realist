@@ -28,6 +28,19 @@ jobs:
           path: harvested-listings
           key: listings-v1-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: listings-v1-
+      # Homes harvested elsewhere, slimmed to facts the site already shows (python -m engine.live_listings
+      # --export-seed), pushed to listing-seed/ on the data branch. Only homes the store does not hold are added,
+      # so re-importing the same seed every run changes nothing.
+      - name: Import the listing seed, if the data branch has one
+        continue-on-error: true
+        run: |
+          if git fetch --quiet --depth 1 origin data 2>/dev/null && git cat-file -e FETCH_HEAD:listing-seed 2>/dev/null; then
+            mkdir -p "$RUNNER_TEMP/seed"
+            git archive FETCH_HEAD listing-seed | tar -x -C "$RUNNER_TEMP/seed"
+            python -m engine.live_listings --import-seed "$RUNNER_TEMP/seed/listing-seed" --output harvested-listings
+          else
+            echo "No listing-seed/ on the data branch."
+          fi
       # The cache carries the snapshots and each city's harvest-state.json (rotation and cool-downs) between runs.
       # The command also rebuilds <city>/listing-cards.json; with no area data here those cards are bare, and the
       # Data pipeline workflow rebuilds them with the area figures and price model before it deploys the site.

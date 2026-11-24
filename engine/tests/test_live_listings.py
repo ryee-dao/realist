@@ -351,5 +351,64 @@ class MergeTests(unittest.TestCase):
             self.assertEqual(set(rows), {"https://m/d"})
 
 
+class SeedTests(unittest.TestCase):
+    now = datetime(2026, 11, 24, 15, tzinfo=timezone.utc)
+
+    def local_file(self, root):
+        rows = [
+            {"key": "1 A ST 60601", "url": "https://m/a", "address": "1 A St, Chicago, IL 60601", "date": "2026-11-20", "price": 300000,
+             "source": "Movoto", "photos": ["https://img/1.jpg"], "description": "Lovely home.", "summary": "Lovely", "broker": "X Realty",
+             "beds": 3, "sqft": 1200, "lat": 41.9, "lon": -87.6, "zip": "60601",
+             "firstSeen": "2026-11-20T01:00:00+00:00", "lastSeen": "2026-11-22T01:00:00+00:00",
+             "sources": [{"provider": "movoto", "source": "Movoto", "url": "https://m/a", "asOf": "2026-11-22T01:00:00+00:00",
+                          "photos": ["https://img/1.jpg"], "description": "Lovely home.", "price": 300000}]},
+            {"key": "2 B ST 60601", "url": "https://m/b", "address": "2 B St, Chicago, IL 60601", "date": "2026-11-21", "price": 250000,
+             "source": "Movoto", "sources": [{"provider": "movoto", "source": "Movoto", "url": "https://m/b", "asOf": "2026-11-21T01:00:00+00:00"}]},
+            {"key": "3 C ST 60601", "url": "https://m/c", "address": "3 C St, Chicago, IL 60601", "date": "2026-04-01", "price": 200000,
+             "source": "Movoto", "sources": []},   # listed over 180 days ago
+        ]
+        feed.write_snapshot(root / "chicago" / "listings.json", {"status": "ready", "rows": rows})
+
+    def test_export_keeps_only_published_facts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root, out = Path(tmp, "data"), Path(tmp, "seed")
+            self.local_file(root)
+            self.assertEqual(feed.export_seed(root, out, self.now, ["chicago"]), {"chicago": 2})
+            seed = json.loads((out / "chicago.json").read_text())
+        text = json.dumps(seed)
+        for banned in ("description", "photos", "summary", "broker", "Lovely", "img/1.jpg", "X Realty"):
+            self.assertNotIn(banned, text)
+        a = seed["rows"][0]
+        self.assertEqual((a["key"], a["price"], a["beds"], a["lat"], a["lastSeen"]), ("1 A ST 60601", 300000, 3, 41.9, "2026-11-22T01:00:00+00:00"))
+        self.assertEqual(a["sources"], [{"provider": "movoto", "source": "Movoto", "url": "https://m/a", "asOf": "2026-11-22T01:00:00+00:00"}])
+        self.assertEqual(seed["rows"][1]["lastSeen"], "2026-11-21T01:00:00+00:00")   # from the read time when not recorded
+
+    def test_import_adds_never_overwrites_is_idempotent_and_yields_to_a_real_read(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            local, seed, hosted = Path(tmp, "local"), Path(tmp, "seed"), Path(tmp, "hosted")
+            self.local_file(local)
+            feed.export_seed(local, seed, self.now, ["chicago"])
+            # the hosted store already holds B, read by its harvester at a different price
+            feed.write_snapshot(hosted / "chicago" / "listings.json", {"status": "ready", "rows": [
+                {"key": "2 B ST 60601", "url": "https://w/b", "address": "2 B Street, Chicago, IL 60601", "date": "2026-11-21",
+                 "price": 249000, "source": "Weichert", "sources": [{"provider": "weichert", "url": "https://w/b", "asOf": "2026-11-23T01:00:00+00:00"}]}]})
+            self.assertEqual(feed.import_seed(seed, hosted, self.now, ["chicago"]), {"chicago": 1})
+            self.assertEqual(feed.import_seed(seed, hosted, self.now, ["chicago"]), {"chicago": 0})
+            merged = json.loads((hosted / "chicago" / "listings.json").read_text())
+            by = {r["key"]: r for r in merged["rows"]}
+            self.assertEqual(by["2 B ST 60601"]["price"], 249000)
+            self.assertNotIn("seeded", by["2 B ST 60601"])
+            self.assertTrue(by["1 A ST 60601"]["seeded"])
+            self.assertEqual(by["1 A ST 60601"]["lastSeen"], "2026-11-22T01:00:00+00:00")
+            # an ordinary merge keeps the stub; a later read of A replaces it with the full record
+            feed.write_snapshot(hosted / "sources" / "movoto" / "chicago" / "new-listings.json", {"status": "ready", "source": "Movoto",
+                "asOf": self.now.isoformat(), "rows": [home("https://m/a", "2026-11-20", 295000, "1 A Street, Chicago, IL 60601", photos=["p"])]})
+            merged = feed.merge_city(hosted, "chicago", self.now)
+        a, = [r for r in merged["rows"] if r["key"] == "1 A ST 60601"]
+        self.assertNotIn("seeded", a)
+        self.assertEqual((a["price"], a["photos"], a["firstSeen"]), (295000, ["p"], "2026-11-20T01:00:00+00:00"))
+        self.assertEqual(a["lastSeen"], self.now.isoformat())
+
+
 if __name__ == "__main__":
     unittest.main()
