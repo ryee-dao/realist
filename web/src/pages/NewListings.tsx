@@ -8,7 +8,7 @@ import { usdCompact } from '../lib/format'
 import { activityPercentiles, percentiles, rankPool, Tier, TIERS, tierStyle, useRamp } from '../lib/grades'
 import ListingsMap, { ListingPin } from '../components/ListingsMap'
 import ListingPanel from '../components/ListingPanel'
-import { Breakdown, Card, CardsDoc, Item, money, monthYear, shortDate } from '../components/listingParts'
+import { Breakdown, Card, CardsDoc, CropImage, Item, LOW_MSG, money, monthYear, shortDate, WarnMark } from '../components/listingParts'
 
 // ---- area tiers: the Find areas factors and maths (lib/grades.ts), with this page's own saved weights ----
 type Factor = 'yield' | 'growth1' | 'growth5' | 'price' | 'activity' | 'crime'
@@ -373,10 +373,10 @@ function Photos({ c }: { c: Card }) {
   const href = p.creditUrl ?? c.url
   const credit = p.credit ?? c.source ?? 'the publisher'
   return <div className="lc-photos">
-    <span className="lc-small" title="Photos can show a problem; they can't rule one out.">{p.findings ? `${p.findings} ${p.findings === 1 ? 'defect' : 'defects'} in photos` : 'No defects seen in photos'}</span>
+    <span className="lc-small" title="Photos can show a problem; they can't rule one out.">{p.findings ? `${p.findings} ${p.findings === 1 ? 'defect' : 'defects'} in photos` : 'No defects seen in photos'}{p.findings && p.allLow ? <> <WarnMark /></> : null}</span>
     {p.crops.length > 0 && <span className="lc-crops">
-      {p.crops.slice(0, 5).map((x) => <a key={x.src} href={href} target="_blank" rel="noopener noreferrer" title={`${x.label}. Crop of a ${credit} photo; opens the listing.`}>
-        <img src={`data/${x.src}`} alt={`${x.label}, detected in a listing photo`} loading="lazy" width={36} height={36} /></a>)}
+      {p.crops.slice(0, 5).map((x) => <a key={x.src} href={href} target="_blank" rel="noopener noreferrer" title={`${x.label}${x.low ? ` (${LOW_MSG.toLowerCase()})` : ''}. Crop of a ${credit} photo; opens the listing.`}>
+        <CropImage src={x.src} alt={`${x.label}, detected in a listing photo`} mark={x.mark} low={x.low} cover /></a>)}
       {p.crops.length > 5 && <a className="lc-more" href={href} target="_blank" rel="noopener noreferrer" title={`More crops of ${credit} photos; opens the listing.`}>+{p.crops.length - 5}</a>}
     </span>}
   </div>

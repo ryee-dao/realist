@@ -99,6 +99,8 @@ class FetchTests(unittest.TestCase):
         def broken(url):
             raise OSError("timeout")
         self.assertFalse(Robots(read=broken).allowed("https://img.test/a.jpg"))   # unreadable: not allowed
+        la.PHOTO_DISABLED_SOURCES.add("everyhome")                 # a publisher switched off is never fetched
+        self.addCleanup(la.PHOTO_DISABLED_SOURCES.discard, "everyhome")
         rep = self.fetch([item(source="EveryHome")], lambda u: (JPEG, "jpg"))
         self.assertEqual((rep["listings"], rep["skipped"]), (0, 1))
         rep = self.fetch([item("https://a.test/3"), item("https://a.test/4")], lambda u: (JPEG, "jpg"),

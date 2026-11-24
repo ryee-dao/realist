@@ -66,5 +66,13 @@ context.CITIES_BOUNDARIES.update({city: cfg["boundaries"] for city, cfg in CITIE
 
 # Asking-side listing figures by ZIP code, shown apart from recorded sales (see context.harvest_listings)
 LISTINGS_SOURCE = {"name": "Listings by ZIP code", "publisher": "Zillow Research", "url": "https://www.zillow.com/research/data/"}
+# The two rent figures behind each area's rent (see engine/rents.py)
+RENT_SOURCES = [
+    {"name": "Asking rents by ZIP code (Observed Rent Index)", "publisher": "Zillow Research", "url": "https://www.zillow.com/research/data/"},
+    {"name": "Rents tenants pay, by census tract (American Community Survey 5-year: median gross rent)",
+     "publisher": "U.S. Census Bureau", "url": "https://www.census.gov/programs-surveys/acs/data/summary-file.html"},
+    {"name": "Small Area Fair Market Rents by ZIP code and bedrooms", "publisher": "U.S. Department of Housing and Urban Development (HUD USER)",
+     "url": "https://www.huduser.gov/portal/datasets/fmr/smallarea/index.html"},
+]
 for _cfg in CITIES.values():
-    _cfg["sources"].append(LISTINGS_SOURCE)
+    _cfg["sources"].extend([LISTINGS_SOURCE, *RENT_SOURCES])

@@ -44,9 +44,13 @@ jobs:
       # The cache carries the snapshots and each city's harvest-state.json (rotation and cool-downs) between runs.
       # The command also rebuilds <city>/listing-cards.json; with no area data here those cards are bare, and the
       # Data pipeline workflow rebuilds them with the area figures and price model before it deploys the site.
+      - name: Install listing browser driver
+        run: python -m pip install -r engine/listing_sources/requirements-browser.txt
       - id: listings
         name: Refresh listings and galleries
         continue-on-error: true
+        env:
+          REALIST_LISTING_TRANSPORT: patchright
         run: python -m engine.live_listings --output harvested-listings
       - name: Summarize the hosted scout
         if: always()

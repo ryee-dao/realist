@@ -13,6 +13,7 @@ from .context import CRIME
 from .geo import Locator
 from .schema import COOP, TYPES, to_float, to_int
 from . import model, stats
+from . import rents as rentpic
 
 ALL = "All homes"
 MIN_N = 5            # fewest sales for a monthly or quarterly median to be published
@@ -321,8 +322,9 @@ def add_context(store, city, areas, geo, last12, city_median):
                 best, best_d = key, d
         return best if best and best_d <= max(1.0, 1.6 * geo[best]["radius"]) else None
 
+    groups = store.read_lookup(f"{city}_population")
     tally = {a["key"]: {"pop": 0, "violent_cur": 0, "property_cur": 0, "violent_prev": 0, "property_prev": 0} for a in areas}
-    for g in store.read_lookup(f"{city}_population").values():
+    for g in groups.values():
         key = nearest((float(g["lat"]), float(g["lon"])))
         if key:
             tally[key]["pop"] += int(g["pop"])
@@ -336,6 +338,7 @@ def add_context(store, city, areas, geo, last12, city_median):
     rents = store.read_lookup(f"{city}_rents")
 
     def rent_for(zips):
+        """Zillow's asking rent for an area, weighted by where its recent sales are, and its change on a year."""
         total = sum(zips.values())
         have = {z: n for z, n in zips.items() if z in rents}
         if not total or sum(have.values()) / total < 0.5:
@@ -348,6 +351,33 @@ def add_context(store, city, areas, geo, last12, city_median):
             yoy = pct_change(sum(int(rents[z]["rent"]) * n for z, n in both.items()), sum(int(rents[z]["rent_prev"]) * n for z, n in both.items()))
         return round(now), yoy
 
+    tracts = store.read_lookup(f"{city}_census_rents")
+    shares = rentpic.tract_shares(groups, nearest) if tracts else {}
+    safmr = store.read_lookup(f"{city}_safmr")
+
+    def rent_picture(zips, tract_share):
+        """Asking rent and its change (Zillow), rent paid (Census), and the headline that combines them."""
+        asking, yoy = rent_for(zips)
+        paid = rentpic.paid_rent(tract_share, tracts) if tract_share else None
+        factor = rentpic.roll_factor(zips, rents_zori, paid["year"]) if paid else None
+        if paid:
+            paid["today"] = round(paid["value"] * factor) if factor and paid["reliable"] else None
+        return {"asking": asking, "yoy": yoy, "paid": paid, "hud": rentpic.hud_rents(zips, safmr) if safmr else None,
+                "pic": rentpic.blend(asking, paid, factor)}
+
+    def put_rent(target, pic, median):
+        b = pic["pic"]
+        target["rent"] = b["rent"] if b else None
+        target["rentAsking"], target["rentYoY"], target["rentPaid"] = pic["asking"], pic["yoy"], pic["paid"]
+        target["rentHud"] = pic["hud"]
+        target["rentBasis"] = b["basis"] if b else None
+        target["rentLow"], target["rentHigh"] = (b["low"], b["high"]) if b else (None, None)
+        target["rentDisagree"] = b["disagree"] if b else None
+        y = (lambda r: round(r * 12 / median * 100, 1) if r and median else None)
+        target["yield"] = y(target["rent"])
+        target["yieldLow"], target["yieldHigh"] = (y(b["low"]), y(b["high"])) if b and b["low"] != b["high"] else (None, None)
+
+    rents_zori = rents
     listings = store.read_lookup(f"{city}_listings")
     zip_sales = Counter(r["zip"] for r in last12 if r["zip"])
     add_context.nearest = nearest
@@ -372,8 +402,7 @@ def add_context(store, city, areas, geo, last12, city_median):
             a["crimeTrend"], a["crimeYoY"] = stats.count_trend(t["violent_cur"] + t["property_cur"], t["violent_prev"] + t["property_prev"])
         else:
             a["crimeTrend"], a["crimeYoY"] = None, None
-        a["rent"], a["rentYoY"] = rent_for(geo[a["key"]]["zips"])
-        a["yield"] = round(a["rent"] * 12 / a["median12"] * 100, 1) if a["rent"] and a["median12"] else None
+        put_rent(a, rent_picture(geo[a["key"]]["zips"], shares.get(a["key"])), a["median12"])
         a["netYield"] = round(a["yield"] * NET_SHARE, 1) if a["yield"] is not None else None
         crime_areas += a["violentRate"] is not None
         rent_areas += a["rent"] is not None
@@ -384,7 +413,15 @@ def add_context(store, city, areas, geo, last12, city_median):
     if city_listings:
         city_listings["series"] = listing_series(zip_sales, listings)
     pop =sum(t["pop"] for t in tally.values())
-    city_rent, city_rent_yoy = rent_for(Counter(r["zip"] for r in last12 if r["zip"]))
+    city_share = Counter()        # every tract, counted with the share of it inside some area's catchment
+    for sh in shares.values():
+        city_share.update(sh)
+    city_pic = {}
+    put_rent(city_pic, rent_picture(zip_sales, dict(city_share)), city_median)
+    if not city_pic["rentHud"] and "metro" in safmr:       # no ZIP-level FMRs (New York): the metro-wide one, labelled so
+        m = safmr["metro"]
+        beds = {str(i): int(m[f"b{i}"]) for i in range(5) if m.get(f"b{i}")}
+        city_pic["rentHud"] = {"year": m.get("year") or None, "beds": beds, "metroWide": True} if beds else None
     state = store.read_state().get(city, {})
     city_trend, city_yoy = stats.count_trend(sum(t["violent_cur"] + t["property_cur"] for t in tally.values()),
                                              sum(t["violent_prev"] + t["property_prev"] for t in tally.values())) if crime else (None, None)
@@ -394,9 +431,7 @@ def add_context(store, city, areas, geo, last12, city_median):
         "violentRate": round(sum(t["violent_cur"] for t in tally.values()) / pop * 1000, 1) if pop and crime else None,
         "propertyRate": round(sum(t["property_cur"] for t in tally.values()) / pop * 1000, 1) if pop and crime else None,
         "crimeYoY": city_yoy, "crimeTrend": city_trend,
-        "rent": city_rent, "rentYoY": city_rent_yoy,
-        "rentMonth": next(iter(rents.values()))["month"] if rents else None,
-        "yield": round(city_rent * 12 / city_median * 100, 1) if city_rent and city_median else None,
+        **city_pic, "rentMonth": next(iter(rents_zori.values()))["month"] if rents_zori else None,
         "listingAreas": listing_areas, "listings": city_listings,   # build_city moves "listings" into overview.json
     }
 
@@ -653,7 +688,7 @@ def build_city(store, city, out_dir):
 # ---- query files for the in-browser SQL page (Explore) ----
 QUERY_COLUMNS = ["date", "price", "type", "address", "zip", "area", "sqft", "year_built", "beds", "lat", "lon", "assessed", "parcel"]
 AREA_COLUMNS = ["area", "area_group", "sales_12m", "median_12m", "median_12m_low", "median_12m_high", "median_yoy_pct",
-                "ppsf_12m", "growth_1y_pct", "growth_5y_pct", "growth_method", "top_type", "rent", "gross_yield_pct", "lat", "lon"]
+                "ppsf_12m", "growth_1y_pct", "growth_5y_pct", "growth_method", "top_type", "rent", "rent_asking", "rent_paid_survey", "rent_paid_today", "gross_yield_pct", "lat", "lon"]
 QUERY_RECENT_YEARS = 3
 
 
@@ -745,7 +780,8 @@ def write_query_files(out_dir, city, cfg, rows, areas, meta):
     recent_bytes, recent_raw = _write_csv_gz(os.path.join(base, "sales-recent.csv.gz"), QUERY_COLUMNS, recent)
     area_rows = [[names.get(a["key"], a["name"]), a["group"], a["sales12"], a["median12"], a.get("medianLow"), a.get("medianHigh"),
                   a.get("medianYoY"), a["ppsf12"], a.get("priceGrowth1"), a.get("priceGrowth5"), a.get("growthMethod"), a["topType"],
-                  a.get("rent"), a.get("yield"), a["lat"], a["lon"]] for a in sorted(areas, key=lambda a: a["key"])]
+                  a.get("rent"), a.get("rentAsking"), (a.get("rentPaid") or {}).get("value"), (a.get("rentPaid") or {}).get("today"),
+                  a.get("yield"), a["lat"], a["lon"]] for a in sorted(areas, key=lambda a: a["key"])]
     area_bytes, _ = _write_csv_gz(os.path.join(base, "areas.csv.gz"), AREA_COLUMNS, [[_cell(v) for v in r] for r in area_rows])
     parquet = write_parquet(os.path.join(base, "sales.csv.gz"), os.path.join(base, "sales.parquet"))
     _dump(os.path.join(base, "query.json"), {

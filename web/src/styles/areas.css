@@ -22,7 +22,7 @@ button.a-row:focus-visible { outline: 2px solid var(--brand); outline-offset: -2
 .a-bar.bad .a-bar-fill { background: var(--chg-5); }
 .a-bar-city { position: absolute; top: -3px; bottom: -3px; width: 2px; margin-left: -1px; border-radius: 1px; background: var(--text); }
 .a-bar-zero { position: absolute; top: -1px; bottom: -1px; width: 1px; background: var(--line-strong); }
-.a-more { margin: 0; padding: 2px 4px 8px; font-size: 12px; line-height: 1.45; color: var(--text-2); }
+.a-more { margin: 0; padding: 2px 4px 8px; font-size: 12px; line-height: 1.45; color: var(--text-2); white-space: pre-line; }
 .a-kv-note { margin: 0 0 10px; font-size: 11.5px; color: var(--muted); }
 
 /* ---- all-areas table: keep the sticky header above the grade squares scrolling beneath it ---- */

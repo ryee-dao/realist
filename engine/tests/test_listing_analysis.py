@@ -369,8 +369,9 @@ class CropAndRetentionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             files = [(0, "photo-0.jpg", 0), (1, "photo-1.jpg", 5)]
             made = la.make_crops(tmp, files, tags, Path(tmp, "crops"), la.pillow_cropper(FakeImage))
-            self.assertEqual(made, 3)
-            self.assertEqual([bool(d.get("crop")) for d in tags["defects"]], [True, False, True, True, False, False])
+            self.assertEqual(made, 4)          # low confidence is cut too; the same region shares its crop
+            self.assertEqual([bool(d.get("crop")) for d in tags["defects"]], [True, True, True, True, True, False])
+            self.assertEqual(tags["defects"][0]["crop"], tags["defects"][1]["crop"])
             self.assertEqual(FakeImage.crops[0], (100, 60, 300, 260))   # 200x160 box grown to the 200 px minimum
             self.assertEqual(len(os.listdir(Path(tmp, "crops"))), 1)  # same-size fake crops: identical bytes, one hash
             data = Path(tmp, "crops", tags["defects"][0]["crop"]).read_bytes()
@@ -506,7 +507,6 @@ class MagickAndSourceTests(unittest.TestCase):
                             {"source": "Coldwell Banker Realty", "url": "https://cb.test/h",
                              "photos": [f"https://m.cbhomes.com/p{i}.webp" for i in range(30)]},
                             {"source": "Movoto", "url": "https://movoto.test/h", "photos": ["https://pi.movoto.com/a.webp"]}]}
-        self.assertIn("everyhome", la.PHOTO_DISABLED_SOURCES)          # the owner's default
         old = set(la.PHOTO_DISABLED_SOURCES)
         la.PHOTO_DISABLED_SOURCES.clear()
         self.assertEqual(la.photo_gallery(home)[1], "EveryHome")
@@ -590,8 +590,8 @@ class PriorityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             files = [(0, "photo-0.jpg", 0), (1, "photo-1.jpg", 1)]
             cut = lambda path, box: b"\xff\xd8\xffcrop"
-            self.assertEqual(la.make_crops(tmp, files, tags, Path(tmp, "c"), cut), 0)
-            self.assertEqual(la.make_crops(tmp, files, tags, Path(tmp, "c"), cut, min_confidence=0.5), 1)
+            self.assertEqual(la.make_crops(tmp, files, tags, Path(tmp, "c"), cut, min_confidence=0.6), 0)
+            self.assertEqual(la.make_crops(tmp, files, tags, Path(tmp, "c"), cut), 1)   # default: every confidence
 
     def test_dry_run_prints_order(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -821,8 +821,9 @@ class FindingTests(unittest.TestCase):
             self.assertEqual((len(p["defects"]), p["findingCount"]), (4, 2))
             self.assertEqual([len(f["crops"]) for f in p["findings"]], [2, 2])
             self.assertTrue(all(c.startswith("analysis/crops/philadelphia/") for f in p["findings"] for c in f["crops"]))
-            self.assertEqual(set(p["findings"][0]), {"type", "item", "room", "rooms", "confidence", "photos", "evidence",
-                                                     "approximate", "positions", "crops"})
+            self.assertEqual(set(p["findings"][0]), {"type", "item", "room", "rooms", "confidence", "lowConfidence", "photos",
+                                                     "evidence", "approximate", "positions", "crops", "marks"})
+            self.assertEqual(len(p["findings"][0]["marks"]), len(p["findings"][0]["crops"]))
 
 
 class ExclusionAndHistoryTests(unittest.TestCase):
@@ -841,6 +842,8 @@ class ExclusionAndHistoryTests(unittest.TestCase):
             (root / "analysis" / "philadelphia.json").write_text(json.dumps({"version": 1, "results": {home["url"]: {
                 "url": home["url"], "address": home["address"], "date": home["date"], "source": "EveryHome",
                 "positions": [0, 1, 2, 3], "tags": tags, "promptVersion": "listing-tags-v2", "key": "x"}}}))
+            la.PHOTO_DISABLED_SOURCES.add("everyhome")            # a publisher switched off after it was analysed
+            self.addCleanup(la.PHOTO_DISABLED_SOURCES.discard, "everyhome")
             doc, report = la.analyse_city(root, "philadelphia", now=datetime(2026, 11, 24, tzinfo=timezone.utc),
                                           log=lambda *_: None)
             self.assertEqual(json.loads((root / "analysis" / "philadelphia.json").read_text())["results"], {})
@@ -1175,6 +1178,96 @@ class CropSizeTests(unittest.TestCase):
             self.assertEqual(la.recut_small_crops(cache, rows, "philadelphia", root / "crops", cut, None, loader,
                                                   log=lambda *_: None), 0)
             self.assertEqual(seen, [])                                                  # nothing fetched twice
+
+
+class MarkAndBackfillTests(unittest.TestCase):
+    def test_mark_geometry(self):
+        box = {"x": 0.40, "y": 0.50, "w": 0.054, "h": 0.041}          # tiny: the crop grows around it
+        mark = la.crop_mark(box, 1024, 683)
+        l, t, r, b = la.crop_rect(box, 1024, 683)
+        self.assertAlmostEqual(mark["x"] + mark["w"] / 2, 0.5, delta=0.01)   # centred in the crop
+        self.assertAlmostEqual(mark["w"], 0.054 * 1024 / (r - l), delta=0.005)
+        self.assertTrue(0 <= mark["x"] and mark["x"] + mark["w"] <= 1 and 0 <= mark["y"] and mark["y"] + mark["h"] <= 1)
+        corner = la.crop_mark({"x": 0.97, "y": 0.0, "w": 0.03, "h": 0.02}, 1000, 800)   # clamped crop: box at the edge
+        self.assertAlmostEqual(corner["x"] + corner["w"], 1.0, delta=0.01)
+        self.assertEqual(corner["y"], 0.0)
+        self.assertIsNone(la.crop_mark({"x": 0.2, "y": 0.2, "w": 0.5, "h": 0.5}, 1000, 800))   # box is the crop
+        shared = la.crop_mark({"x": 0.12, "y": 0.1, "w": 0.1, "h": 0.1}, 1000, 800,
+                              rect=la.crop_rect({"x": 0.1, "y": 0.1, "w": 0.2, "h": 0.2}, 1000, 800))
+        self.assertGreater(shared["x"], 0)
+        self.assertLess(shared["w"], 1)
+
+    def test_image_size_headers(self):
+        self.assertEqual(la.image_size(png(37, 21)), (37, 21))
+        jpeg = (b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00"
+                b"\xff\xc0\x00\x11\x08\x02\xab\x04\x00\x03\x01\x22\x00\x02\x11\x01\x03\x11\x01")
+        self.assertEqual(la.image_size(jpeg), (1024, 683))
+        self.assertEqual(la.image_size(b"GIF89a\x10\x00\x08\x00"), (16, 8))
+        self.assertIsNone(la.image_size(b"nope"))
+
+    def test_every_confidence_cropped_with_mark(self):
+        tags = la.validate_tags(good_tags(2, defects=[defect("peeling_paint", 0, 0.3, {"x": 0.4, "y": 0.4, "w": 0.05, "h": 0.05})]), 2)
+        with tempfile.TemporaryDirectory() as tmp:
+            Path(tmp, "photo-0.png").write_bytes(png(1000, 800))
+            files = [(0, "photo-0.png", 0), (1, "photo-1.png", 1)]
+            la.make_crops(tmp, files, tags, Path(tmp, "c"), lambda path, box: b"\xff\xd8\xffcrop")
+        d = tags["defects"][0]
+        self.assertTrue(d["crop"])
+        self.assertAlmostEqual(d["mark"]["x"] + d["mark"]["w"] / 2, 0.5, delta=0.01)
+        found = la.group_findings(dict(tags, photos=[photo(0, "kitchen", "c0:kitchen-1")]))
+        self.assertEqual((found[0]["lowConfidence"], found[0]["marks"]), (True, [d["mark"]]))
+
+    def test_backfill_missing_crops_and_marks(self):
+        rows = [{"url": "https://a.test/b", "address": "1 Main St Philadelphia, PA 19123", "date": "2026-11-23",
+                 "price": 200000, "photos": [f"https://img.test/b{i}.jpg" for i in range(4)]}]
+        subject = la.photo_subject(rows[0])
+        box = {"x": 0.3, "y": 0.3, "w": 0.3, "h": 0.3}
+        defects = [dict(defect("peeling_paint", 1, 0.4, box), gallery_position=1),                     # no crop yet
+                   dict(defect("damaged_flooring", 1, 0.45, dict(box, x=0.31)), gallery_position=1),   # same region
+                   dict(defect("water_stain_wall", 2, 0.9, box), gallery_position=2, crop="v2.jpg", cropVersion=2),
+                   dict(defect("debris_or_cleanout_needed", 0, 0.9, box), gallery_position=0, crop="v1.jpg"),
+                   dict(defect("other_damage", 3, 0.4, box), gallery_position=3)]                      # photo gone
+        record = {"url": "https://a.test/b", "date": "2026-11-23", "model": la.DEFAULT_MODEL, "positions": [0, 1, 2, 3],
+                  "promptVersion": la.PROMPT_VERSION, "tags": good_tags(4, defects=defects),
+                  "key": la.cache_key(subject, la.DEFAULT_MODEL)}
+        cache = {"https://a.test/b": record}
+        fetched = []
+
+        def loader(url):
+            fetched.append(url)
+            if url.endswith("b3.jpg"):
+                raise OSError("404")
+            return png(1000, 800), "png"
+        with tempfile.TemporaryDirectory() as tmp:
+            cut = lambda path, box: b"\xff\xd8\xff" + repr(box).encode()
+            n = la.recut_small_crops(cache, rows, "philadelphia", Path(tmp), cut, None, loader, log=lambda *_: None)
+            a, b, c, v1, gone = record["tags"]["defects"]
+            self.assertTrue(a["crop"])
+            self.assertEqual(b["crop"], a["crop"])                         # the overlapping region shares the crop
+            self.assertIn("mark", c)                                       # an existing crop got its mark
+            self.assertIsNone(v1["mark"])                                  # a version-1 crop is the box: no fetch needed
+            self.assertTrue(gone["recutTried"] and not gone.get("crop"))
+            self.assertNotIn(rows[0]["photos"][0], fetched)
+            self.assertEqual(n, 4)
+            fetched.clear()
+            la.recut_small_crops(cache, rows, "philadelphia", Path(tmp), cut, None, loader, log=lambda *_: None)
+            self.assertEqual(fetched, [])                                  # nothing retried
+            record["cropsRemoved"] = True
+            del record["tags"]["defects"][0]["crop"]
+            self.assertEqual(la.recut_small_crops(cache, rows, "philadelphia", Path(tmp), cut, None, loader,
+                                                  log=lambda *_: None), 0)  # taken down: never re-created
+
+    def test_cards_carry_caption_low_and_marks(self):
+        from engine import listing_cards as lc
+        self.assertEqual(lc.finding_caption({"type": "missing_kitchen_or_bath_fixtures", "item": "faucet"}), "Faucet missing")
+        self.assertEqual(lc.finding_caption({"type": "water_stain_ceiling"}), "Ceiling stain")
+        self.assertEqual(lc.finding_caption({"type": "visible_mould", "item": "bath ceiling tile"}), "Visible mould")  # > 4 words
+        found = [{"type": "peeling_paint", "rooms": 1, "confidence": 0.4, "lowConfidence": True, "crops": ["a.jpg", "b.jpg"],
+                  "marks": [{"x": 0.4, "y": 0.4, "w": 0.2, "h": 0.2}, None]}]
+        summary, _ = lc.photo_summary({"findings": found, "findingCount": 1})
+        self.assertTrue(summary["allLow"])
+        self.assertEqual([(c["low"], c["mark"] is None, c["caption"]) for c in summary["crops"]],
+                         [(True, False, "Peeling paint"), (True, True, "Peeling paint")])
 
 
 class ItemAndRepairTests(unittest.TestCase):

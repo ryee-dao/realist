@@ -4,6 +4,7 @@ import { ReactNode, useEffect, useMemo, useRef, useState } from 'react'
 import { Area, Areas, City, Listings, useData } from '../lib/data'
 import { Theme, cssVar } from '../lib/hooks'
 import { monthLabel, num, pct, usd, usdCompact } from '../lib/format'
+import { rentLines, rentValue, yieldRange } from '../lib/rent'
 import MapView, { classOf, MapPoint, quintiles, SCALE } from '../components/MapView'
 import LineChart from '../charts/LineChart'
 import Sparkline from '../charts/Sparkline'
@@ -208,8 +209,8 @@ export default function AreasPage({ city, theme }: { city: City; theme: Theme })
                   <td className="num" title={growthTip(a)}>{pct(growth5(a), 0)}{G(a, 'change5y')}</td>
                   <td className="num">{a.ppsf12 == null ? '–' : usd(a.ppsf12)}</td>
                   <td className="num">{num(a.sales12)}{G(a, 'sales12')}</td>
-                  <td className="num">{a.rent == null ? '–' : usd(a.rent)}</td>
-                  <td className="num">{a.yield == null ? '–' : <>{a.yield.toFixed(1)}%{G(a, 'yield')}</>}</td>
+                  <td className="num" title={a.rent == null ? undefined : rentLines(a).join('\n')}>{a.rent == null ? '–' : usd(a.rent)}</td>
+                  <td className="num" title={yieldRange(a) ?? undefined}>{a.yield == null ? '–' : <>{a.yield.toFixed(1)}%{G(a, 'yield')}</>}</td>
                   <td className="num" title={rateTip(a.violentRaw)}>{a.violentRate == null ? '–' : <>{a.violentRate.toFixed(1)}{G(a, 'violentRate')}</>}</td>
                   <td className="num" title={rateTip(a.propertyRaw)}>{a.propertyRate == null ? '–' : <>{a.propertyRate.toFixed(1)}{G(a, 'propertyRate')}</>}</td>
                   <td><Sparkline values={a.quarterly} /></td>
@@ -246,7 +247,7 @@ function trendWord(t: { crimeTrend?: string | null; crimeYoY: number | null }): 
   return `${t.crimeYoY > 0 ? 'up' : 'down'} ${Math.abs(t.crimeYoY).toFixed(0)}%`
 }
 
-const YIELD_NOTE = 'Yield is a year of typical rent divided by the median price. “After typical costs” assumes about half the rent goes on property tax, insurance, repairs, empty months and management; mortgage costs are not included.'
+const YIELD_NOTE = 'Yield is a year of rent divided by the median price. “After typical costs” assumes about half the rent goes on property tax, insurance, repairs, empty months and management; mortgage costs are not included.'
 
 function top(areas: Area[], dir: 1 | -1): string {
   const ranked = areas.filter((a) => a.median12 != null).sort((a, b) => ((b.median12 as number) - (a.median12 as number)) * dir)
@@ -328,10 +329,10 @@ function AreaDetail({ area, data, city, ramp, standing, onClose }: { area: Area;
     { id: 'ppsf', label: 'Price / sq ft', value: area.ppsf12 == null ? 'not published' : usd(area.ppsf12) },
     { id: 'sold', label: 'Homes sold', grade: 'sales12', value: num(area.sales12),
       more: `${num(area.sales12)} in 12 months${area.salesYoY != null ? `, ${pct(area.salesYoY, 0)} on the year before` : ''}` },
-    { id: 'rent', label: 'Typical rent', value: area.rent == null ? 'no estimate' : `${usd(area.rent)}/mo`, bar: area.rent == null ? undefined : level(area.rent, cx.rent, dom.rent),
-      more: area.rent == null ? undefined : `${usd(area.rent)} a month${vs(cx.rent == null ? null : usd(cx.rent))}${area.rentYoY != null ? `. ${pct(area.rentYoY)} in a year.` : ''}` },
+    { id: 'rent', label: 'Rent', value: rentValue(area), bar: area.rent == null ? undefined : level(area.rent, cx.rent, dom.rent),
+      more: area.rent == null ? undefined : rentLines(area, cx).join('\n') },
     { id: 'yield', label: 'Rent yield', grade: 'yield', value: area.yield == null ? '–' : `${area.yield.toFixed(1)}%`, bar: area.yield == null ? undefined : level(area.yield, cx.yield, dom.yield),
-      more: area.yield == null ? undefined : `${area.yield.toFixed(1)}% before costs${area.netYield != null ? `, about ${area.netYield.toFixed(1)}% after typical costs` : ''}${vs(cx.yield == null ? null : `${cx.yield.toFixed(1)}%`)}. ${YIELD_NOTE}` },
+      more: area.yield == null ? undefined : `${area.yield.toFixed(1)}% before costs${area.netYield != null ? `, about ${area.netYield.toFixed(1)}% after typical costs` : ''}${vs(cx.yield == null ? null : `${cx.yield.toFixed(1)}%`)}.${yieldRange(area) ? `\nRange ${yieldRange(area)}.` : ''}\n${YIELD_NOTE}` },
   ]
   if (area.violentRate == null) rows.push({ id: 'inc', label: 'Incidents', value: 'too few residents' })
   else rows.push(

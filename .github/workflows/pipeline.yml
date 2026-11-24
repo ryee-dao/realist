@@ -54,6 +54,8 @@ jobs:
       - name: Harvest, validate and build analytics
         env:
           SOCRATA_APP_TOKEN: ${{ secrets.SOCRATA_APP_TOKEN }}   # optional, raises API rate limits
+          HUD_CENSUS_API_KEY: ${{ secrets.HUD_CENSUS_API_KEY }}   # optional HUD USER API token: Small Area Fair Market Rents
+          CENSUS_API_KEY: ${{ secrets.CENSUS_API_KEY }}   # optional; without it the ACS Summary File is read instead
         run: python -m engine run ${{ inputs.full && '--full' || '' }}
 
       - name: Save the harvest store
@@ -92,10 +94,17 @@ jobs:
       # the cache expired after 7 idle days) this reads one publisher per city; a city that still has no
       # snapshot shows the site's unavailable state rather than failing the build.
       - name: Include latest city listing snapshots
+        env:
+          REALIST_LISTING_TRANSPORT: patchright
         run: |
+          browser_installed=false
           for city in philadelphia nyc chicago; do
             snapshot="harvested-listings/$city/new-listings.json"
             if [ ! -s "$snapshot" ]; then
+              if [ "$browser_installed" = false ]; then
+                python -m pip install -r engine/listing_sources/requirements-browser.txt
+                browser_installed=true
+              fi
               python -m engine.live_listings --city "$city" --output harvested-listings || echo "::warning::Could not refresh $city listings"
             fi
             # The raw snapshot holds publishers' full descriptions and photo links, so it is never copied into

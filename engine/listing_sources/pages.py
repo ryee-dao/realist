@@ -13,7 +13,7 @@ CITIES = {
 }
 USER_AGENT = "Realist/2.0 (public housing data research)"
 # Titles of interstitial bot-check pages. Such a page means the publisher is declining automated reads.
-CHALLENGE_TITLES = re.compile(r"<title[^>]*>\s*(Just a moment|Attention Required|Access denied|Connection Verification"
+CHALLENGE_TITLES = re.compile(r"<title[^>]*>\s*(Just a moment|Attention Required|Access denied|Access to this page has been denied|Connection Verification"
                               r"|Pardon Our Interruption|Are you a robot)", re.I)
 
 

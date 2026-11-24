@@ -2,7 +2,8 @@ import '../styles/finder.css'
 import { useMemo, useRef, useState } from 'react'
 import { Area, Areas, City, Grid, Listings, useData } from '../lib/data'
 import { cssVar, Theme } from '../lib/hooks'
-import { monthLabel, num, pct, usdCompact } from '../lib/format'
+import { monthLabel, num, pct, usd, usdCompact } from '../lib/format'
+import { rentLines, yieldRange } from '../lib/rent'
 import { activityPercentiles, gradeOf, gradeStyle, percentiles, rankPool, Tier, TIER_SEQ, TIERS, tierStyle, useRamp, WEAK_BELOW } from '../lib/grades'
 import SectionMap, { escapeHtml, SectionFill } from '../components/SectionMap'
 import { Segmented, SortHead } from '../components/bits'
@@ -11,7 +12,7 @@ type Factor = 'yield' | 'growth1' | 'growth5' | 'price' | 'activity' | 'crime'
 type Weights = Record<Factor, number>
 
 const FACTORS: { id: Factor; label: string; short: string; hint: string }[] = [
-  { id: 'yield', label: 'Rental yield', short: 'Yield', hint: 'A year of typical rent as a share of the typical sale price' },
+  { id: 'yield', label: 'Rental yield', short: 'Yield', hint: 'A year of rent as a share of the typical sale price' },
   { id: 'growth1', label: 'Growth, 1 yr', short: '1-yr growth', hint: 'Change in the median sale price over a year' },
   { id: 'growth5', label: 'Growth, 5 yr', short: '5-yr growth', hint: 'Change in the median sale price over five years' },
   { id: 'price', label: 'Lower price', short: 'Price', hint: 'A lower median sale price scores higher' },
@@ -265,12 +266,12 @@ export default function ScreenerPage({ city, theme }: { city: City; theme: Theme
                 const on = w[f.id] > 0
                 const v = f.id === 'activity' && sel.area.listings?.active != null ? `${num(sel.area.sales12)} sold · ${num(sel.area.listings.active)} for sale` : value(sel.area, f.id)
                 return (
-                  <div className={`f-fact ${on ? '' : 'off'}`} key={f.id} title={f.hint}>
+                  <div className={`f-fact ${on ? '' : 'off'}`} key={f.id} title={f.id === 'yield' && sel.area.rent != null ? [...rentLines(sel.area, city.context), yieldRange(sel.area)].filter(Boolean).join('\n') : f.hint}>
                     <span className="f-fact-label">{f.label}{!on && <em> not weighted</em>}</span>
                     <span className="f-fact-val" title={UNIT[f.id]}>{v ?? <span className="muted">no data</span>}</span>
                     {v == null ? <span /> : gradeBox(sel, f.id)}
                     {v != null && f.id === 'crime' && <span className="f-fact-note">per 1,000 residents</span>}
-                    {v != null && f.id === 'yield' && <span className="f-fact-note">Before taxes, insurance, repairs and vacancy</span>}
+                    {v != null && f.id === 'yield' && <span className="f-fact-note">Rent {usd(sel.area.rent)}/mo · before taxes, insurance, repairs and vacancy</span>}
                   </div>
                 )
               })}

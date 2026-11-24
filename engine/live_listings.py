@@ -13,6 +13,7 @@ import os
 import re
 import sys
 import time
+from contextlib import nullcontext
 from datetime import datetime, timedelta, timezone
 from html import unescape
 from pathlib import Path
@@ -21,11 +22,12 @@ from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
 from .listing_sources import atproperties, coldwell_banker, everyhome, movoto, northrop, onekey, trulia, urban, weichert
+from .listing_sources.browser import browser_loader
 from .listing_sources.pages import CITIES, Blocked, InactiveListing, fetch, valid_price, zip_of
 
 PROVIDERS = {"movoto": movoto, "weichert": weichert, "coldwell_banker": coldwell_banker, "everyhome": everyhome,
              "atproperties": atproperties, "onekey": onekey, "trulia": trulia, "northrop": northrop, "urban": urban}
-# Left out of the rotation until the owner decides otherwise; `--source` still reads them on request.
+# Paused for direct HTTP. Trulia is eligible when the browser transport is selected.
 PAUSED = {"trulia": "answered HTTP 403 to every search page in November 2026"}
 PAGE_LIMIT = 8
 PROPERTY_LIMIT = 16
@@ -108,8 +110,14 @@ def read_source(source, city, now, load, pause):
             "rows": sorted(rows.values(), key=lambda r: r["date"], reverse=True)}
 
 
+def paused_publishers():
+    if os.environ.get("REALIST_LISTING_TRANSPORT") == "patchright":
+        return {key: reason for key, reason in PAUSED.items() if key != "trulia"}
+    return PAUSED
+
+
 def eligible(city):
-    return [key for key, source in PROVIDERS.items() if city in getattr(source, "PATHS", CITIES) and key not in PAUSED]
+    return [key for key, source in PROVIDERS.items() if city in getattr(source, "PATHS", CITIES) and key not in paused_publishers()]
 
 
 def rotation(city, publishers, now, requested=None):
@@ -202,7 +210,7 @@ def enrich(snapshot, previous, now, limit, load=fetch, pause=time.sleep, inactiv
 
 def attention(city, publishers, now):
     """Publishers the owner should look at: paused, cooling down after a refusal, or failing repeatedly."""
-    notes = [{"provider": key, "paused": reason} for key, reason in PAUSED.items()
+    notes = [{"provider": key, "paused": reason} for key, reason in paused_publishers().items()
              if city in getattr(PROVIDERS[key], "PATHS", CITIES)]
     for key in eligible(city):
         record = publishers.get(key) or {}
@@ -516,7 +524,12 @@ if __name__ == "__main__":
     supported = getattr(PROVIDERS.get(args.source), "PATHS", CITIES)
     if args.city and args.city not in supported:
         parser.error(f"{args.source} does not cover {args.city}")
-    results = [publish(args.output, c, args.source, args.details) for c in ([args.city] if args.city else supported)]
+    transport = os.environ.get("REALIST_LISTING_TRANSPORT", "http")
+    if transport not in ("http", "patchright"):
+        parser.error("REALIST_LISTING_TRANSPORT must be http or patchright")
+    print(f"Listing transport: {transport}", flush=True)
+    with (browser_loader() if transport == "patchright" else nullcontext(fetch)) as load:
+        results = [publish(args.output, c, args.source, args.details, load=load) for c in ([args.city] if args.city else supported)]
     from . import listing_cards   # rebuild the New listings page's cards from the merged files (never fails the run)
     listing_cards.refresh(args.output, [args.city] if args.city else supported)
     sys.exit(0 if all(results) else 1)

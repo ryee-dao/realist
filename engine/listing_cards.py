@@ -282,6 +282,35 @@ def signal_items(signals):
     return plus, minus, [t["text"] for t in tags]
 
 
+CAPTIONS = {   # defect type -> (caption without an item, caption with one); 2-4 words, drawn on the crop
+    "water_stain_ceiling": ("Ceiling stain", "{item} stain"), "water_stain_wall": ("Wall stain", "{item} stain"),
+    "visible_mould": ("Visible mould", "Mould on {item}"), "peeling_paint": ("Peeling paint", "{item} peeling"),
+    "damaged_flooring": ("Damaged floor", "{item} damaged"),
+    "damaged_ceiling_or_drywall": ("Damaged ceiling", "{item} damaged"),
+    "missing_kitchen_or_bath_fixtures": ("Missing fixture", "{item} missing"),
+    "broken_windows_or_doors": ("Broken window", "{item} broken"), "exposed_wiring": ("Exposed wiring", "Exposed {item}"),
+    "pest_signs": ("Signs of pests", "Pests: {item}"), "fire_or_smoke_damage": ("Fire damage", "{item} fire damage"),
+    "roof_damage": ("Roof damage", "{item} damaged"), "structural_cracks": ("Crack", "{item} crack"),
+    "debris_or_cleanout_needed": ("Debris", "Debris"), "other_damage": ("Damage", "{item} damaged"),
+}
+LOW_CONFIDENCE = 0.6
+
+
+def finding_caption(f):
+    """Short caption for a crop, e.g. "Faucet missing", "Ceiling stain": 2-4 words, never the evidence sentence."""
+    plain, with_item = CAPTIONS.get(f.get("type"), ("Defect", "{item} damaged"))
+    text = with_item.format(item=f["item"]) if f.get("item") else plain
+    if len(text.split()) > 4:
+        text = plain
+    return text[:1].upper() + text[1:]
+
+
+def _low(f):
+    if "lowConfidence" in f:
+        return bool(f["lowConfidence"])
+    return type(f.get("confidence")) in (int, float) and f["confidence"] < LOW_CONFIDENCE
+
+
 def finding_label(f):
     """"Missing fixtures (faucet)" when the finding names its specific thing, else the plain defect label."""
     label = DEFECTS.get(f.get("type"), str(f.get("type", "")).replace("_", " ").capitalize())
@@ -304,7 +333,8 @@ def photo_summary(photo):
         named = f"{label} ({', '.join(items[:3])})" if items else label
         minus.append({"text": f"{named} · {_plural(rooms, 'room')}", "kind": "photo",
                       "why": "; ".join(f"{str(f.get('room', '')).replace('_', ' ')}: {f.get('evidence', '')}" for f in found)})
-        crops += [{"src": c, "label": finding_label(f)} for f in found for c in f.get("crops") or []]
+        crops += [{"src": c, "label": finding_label(f), "caption": finding_caption(f), "low": _low(f),
+                   "mark": m} for f in found for c, m in zip(f.get("crops") or [], (f.get("marks") or []) + [None] * 99)]
     editing = photo.get("editing") or {}
     if editing.get("labelled"):
         minus.append({"text": "Photos virtually staged (labelled)", "kind": "photo",
@@ -313,7 +343,9 @@ def photo_summary(photo):
     if missing:
         minus.append({"text": f"Not shown in photos: {', '.join(missing)}", "kind": "photo",
                       "why": "Expected for this home type but not in the photos analysed"})
+    found_all = photo.get("findings") or []
     out = {"findings": photo.get("findingCount") or 0, "crops": crops, "credit": photo.get("credit"),
+           "allLow": bool(found_all) and all(_low(f) for f in found_all),
            "creditUrl": photo.get("creditUrl"), "condition": photo.get("condition"),
            "coverage": (photo.get("coverage") or {}).get("rating"), "seen": (photo.get("seenClean") or {}).get("text"),
            "possiblyEdited": bool(editing.get("suspected") or editing.get("emptyAndFurnished")) and not editing.get("labelled")}
@@ -512,7 +544,9 @@ def detail_for(card, row, tag, sale, ctx):
         out["photo"] = {
             "findings": [{"type": f.get("type"), "label": finding_label(f), "item": f.get("item"),
                           "room": str(f.get("room") or "").replace("_", " "), "rooms": f.get("rooms") or 1,
-                          "confidence": f.get("confidence"), "evidence": f.get("evidence"), "crops": f.get("crops") or []}
+                          "confidence": f.get("confidence"), "lowConfidence": _low(f), "caption": finding_caption(f),
+                          "evidence": f.get("evidence"), "crops": f.get("crops") or [],
+                          "marks": [m for _, m in zip(f.get("crops") or [], (f.get("marks") or []) + [None] * 99)]}
                          for f in photo.get("findings") or []],
             "missing": (photo.get("coverage") or {}).get("missing") or [],
             "coverage": (photo.get("coverage") or {}).get("rating"),

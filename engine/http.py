@@ -34,8 +34,8 @@ class Client:
         if wait > 0:
             time.sleep(wait)
 
-    def get_json(self, url, params):
-        return self._get(url, params, json.loads)
+    def get_json(self, url, params, headers=None):
+        return self._get(url, params, json.loads, headers=headers)
 
     def get_bytes(self, url):
         return self._get(url, {}, lambda body: body)
@@ -44,12 +44,13 @@ class Client:
         """Response headers only (for Last-Modified / ETag change checks on large files)."""
         return self._get(url, {}, None, method="HEAD")
 
-    def _get(self, url, params, parse, method="GET"):
+    def _get(self, url, params, parse, method="GET", headers=None):
         full = url + ("?" + urllib.parse.urlencode(params) if params else "")
         host = urllib.parse.urlsplit(url).netloc
-        headers = {"User-Agent": "realist-engine/2.0", "Accept-Encoding": "gzip"}
+        extra, headers = headers or {}, {"User-Agent": "realist-engine/2.0", "Accept-Encoding": "gzip"}
+        headers.update(extra)      # e.g. a bearer token for one API; never logged
         token = os.environ.get("SOCRATA_APP_TOKEN")
-        if token and "carto" not in host:
+        if token and "carto" not in host and "Authorization" not in extra:
             headers["X-App-Token"] = token
         last_error = None
         for attempt in range(self.retries):

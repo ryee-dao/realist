@@ -1,8 +1,8 @@
 """Context data that turns sale prices into something you can act on: reported crime, population and rents.
 
 Crime is pulled already aggregated (the police APIs count incidents per ~500 m grid cell on their own
-servers), population comes from 2020 Census block groups, and rents from Zillow's public rent index by
-ZIP code. None of it identifies a person. Assigning cells and block groups to areas happens in analytics.
+servers), population comes from 2020 Census block groups, asking rents from Zillow's public rent index by
+ZIP code, and the rents tenants pay from the Census Bureau's American Community Survey by tract. None of it identifies a person. Assigning cells and block groups to areas happens in analytics.
 """
 import calendar
 import csv
@@ -163,8 +163,18 @@ def harvest_population(ctx, city, report):
     ctx.store.write_lookup(f"{city}_population", groups, ["lat", "lon", "pop"])
 
 
+def zori_annual(months, series):
+    """Calendar-year averages of one ZIP's monthly series, for years with all twelve months: "2023:1612;2024:1655"."""
+    by_year = {}
+    for m, v in zip(months, series):
+        if v:
+            by_year.setdefault(m[:4], []).append(v)
+    return ";".join(f"{y}:{round(sum(v) / 12)}" for y, v in sorted(by_year.items()) if len(v) == 12)
+
+
 def harvest_rents(ctx, city, report, cache):
-    """Typical asking rent per ZIP code: the latest month and the same month a year earlier."""
+    """Typical asking rent per ZIP code: the latest month, the same month a year earlier, and calendar-year averages
+    (the averages let a Census survey figure, stated in one year's dollars, be brought forward to today)."""
     if "rows" not in cache:      # one download serves every city in the run
         cache["rows"] = list(csv.reader(io.StringIO(ctx.client.get_bytes(ZORI).decode("utf-8"))))
     head, body = cache["rows"][0], cache["rows"][1:]
@@ -183,9 +193,233 @@ def harvest_rents(ctx, city, report, cache):
             continue
         at = months.index(latest[0])
         year_ago = series[at - 12][1] if at >= 12 else None
-        rents[row[col["RegionName"]].zfill(5)] = {"rent": round(latest[1]), "rent_prev": round(year_ago) if year_ago else "", "month": latest[0][:7]}
+        rents[row[col["RegionName"]].zfill(5)] = {"rent": round(latest[1]), "rent_prev": round(year_ago) if year_ago else "", "month": latest[0][:7],
+                                                  "annual": zori_annual(months, [v for _, v in series])}
         report["kept"] += 1
-    ctx.store.write_lookup(f"{city}_rents", rents, ["rent", "rent_prev", "month"])
+    ctx.store.write_lookup(f"{city}_rents", rents, ["rent", "rent_prev", "month", "annual"])
+
+
+# ---- rents tenants pay: American Community Survey 5-year estimates, by census tract ----------------------------
+# Rent tables only (project rule: no demographic variables). B25064 median gross rent (rent plus utilities, renter
+# homes paying cash rent), B25031 the same by bedrooms, B25003 tenure (renter-occupied homes, used as weights).
+ACS_TABLES = {
+    "B25064": {"E001": "rent", "M001": "rent_moe"},
+    "B25003": {"E003": "renters", "M003": "renters_moe"},
+    "B25031": {f"{k}00{i + 2}": f"b{i}{'' if k == 'E' else '_moe'}" for i in range(6) for k in ("E", "M")},
+}
+ACS_COLUMNS = ["year", "rent", "rent_moe", "open", "renters", "renters_moe"] + [f"b{i}{s}" for i in range(6) for s in ("", "_moe")]
+ACS_API = "https://api.census.gov/data/{year}/acs/acs5"
+ACS_SUMMARY_FILE = "https://www2.census.gov/programs-surveys/acs/summary_file/{year}/table-based-SF/data/5YRData/acsdt5y{year}-{table}.dat"
+ACS_REFRESH_DAYS = 30        # the 5-year release comes out once a year; look for a new one at most monthly
+OPEN_ENDED = -333333333      # margin code: the median falls in an open-ended bracket ($3,500 or more, or under $100)
+NO_MARGIN = -555555555       # margin code: a controlled estimate, exact by construction
+
+
+def acs_value(text):
+    """An ACS cell as a number, or None for the Bureau's negative annotation codes (no sample, not computable...)."""
+    v = to_float(text)
+    return None if v is None or v < 0 else v
+
+
+def acs_tract_record(cells):
+    """One tract's lookup row from its cells, keyed like the Summary File ("B25064_E001": "1406", ...)."""
+    rec = {}
+    for table, fields in ACS_TABLES.items():
+        for cell, name in fields.items():
+            raw = cells.get(f"{table}_{cell}")
+            if name.endswith("_moe") and to_float(raw) == NO_MARGIN:
+                rec[name] = 0
+            else:
+                v = acs_value(raw)
+                rec[name] = "" if v is None else round(v)
+    rec["open"] = 1 if to_float(cells.get("B25064_M001")) == OPEN_ENDED and rec["rent"] != "" else ""
+    if rec["open"]:
+        rec["rent_moe"] = ""
+    return rec
+
+
+def parse_summary_file(text, prefixes):
+    """Tract rows of one ACS table-based Summary File (pipe-separated, every geography in the country) whose
+    state+county FIPS start with one of `prefixes`. Returns {tract GEOID (11 digits): {"B25064_E001": "1406", ...}}."""
+    lines = iter(text.splitlines())
+    head = next(lines).split("|")
+    marks = tuple("1400000US" + p for p in prefixes)
+    out = {}
+    for line in lines:
+        if not line.startswith(marks):
+            continue
+        row = line.split("|")
+        out[row[0][9:]] = dict(zip(head[1:], row[1:]))
+    return out
+
+
+def parse_api_rows(rows):
+    """Census API JSON (a header row, then data rows) for tracts, re-keyed to Summary File names: B25064_001E -> B25064_E001."""
+    head = rows[0]
+    out = {}
+    for row in rows[1:]:
+        rec = dict(zip(head, row))
+        geoid = rec["state"] + rec["county"] + rec["tract"]
+        cells = out.setdefault(geoid, {})
+        for name, v in rec.items():
+            if name[:1] == "B" and name[-1] in "EM" and "_" in name:
+                table, cell = name.split("_")
+                cells[f"{table}_{cell[-1]}{cell[:-1]}"] = v
+    return out
+
+
+def _acs_fips(city):
+    return [s + c for s, c in COUNTIES[city]["fips"]]
+
+
+def _acs_latest(ctx, key):
+    """The newest 5-year release that answers, trying this year back to three years ago. Returns (year, version)."""
+    for year in range(ctx.today.year, ctx.today.year - 4, -1):
+        try:
+            if key:
+                ctx.client.get_json(ACS_API.format(year=year), {"get": "B25064_001E", "for": "state:42", "key": key})
+                return year, f"api-{year}"
+            h = ctx.client.head(ACS_SUMMARY_FILE.format(year=year, table="b25064"))
+            return year, f"{year}|{h.get('last-modified') or h.get('etag') or ''}"
+        except FetchError:
+            continue
+    raise FetchError("no ACS 5-year release answered")
+
+
+def _acs_fetch(ctx, year, key, prefixes):
+    """{tract GEOID: cells} for every wanted county: from the Census API with a key, else from the Summary File."""
+    cells = {}
+    if key:
+        names = [f"{t}_{c[1:]}{c[0]}" for t, fields in ACS_TABLES.items() for c in fields]
+        for fips in prefixes:
+            rows = ctx.client.get_json(ACS_API.format(year=year), {"get": ",".join(names), "for": "tract:*",
+                                                                    "in": f"state:{fips[:2]} county:{fips[2:]}", "key": key})
+            for g, c in parse_api_rows(rows).items():
+                cells.setdefault(g, {}).update(c)
+        return cells
+    for table in ACS_TABLES:
+        text = ctx.client.get_bytes(ACS_SUMMARY_FILE.format(year=year, table=table.lower())).decode("utf-8")
+        for g, c in parse_summary_file(text, prefixes).items():
+            cells.setdefault(g, {}).update(c)
+    return cells
+
+
+def harvest_census_rents(ctx, city, report, cache):
+    """What tenants pay, per census tract, from the latest ACS 5-year release.
+
+    Without a CENSUS_API_KEY the Census API refuses data queries, so the engine reads the Bureau's table-based Summary
+    File instead (the same estimates; about 80 MB for the three tables, read once per run for every city). The release
+    changes once a year, so a held lookup is re-checked at most every 30 days and re-read only when the file changed.
+    """
+    name = f"{city}_census_rents"
+    held = ctx.store.read_lookup(name)
+    checked = ctx.state.get("census_rents_checked")
+    if held and not ctx.full and checked and (ctx.today - dt.date.fromisoformat(checked)).days < ACS_REFRESH_DAYS:
+        report["skipped"] = f"checked {checked}; the survey is released yearly"
+        return
+    key = os.environ.get("CENSUS_API_KEY") or None
+    if "latest" not in cache:
+        cache["latest"] = _acs_latest(ctx, key)
+    year, version = cache["latest"]
+    if held and not ctx.full and version == ctx.state.get("census_rents_version"):
+        ctx.state["census_rents_checked"] = ctx.today.isoformat()
+        report["skipped"] = f"{year - 4}–{year} survey unchanged"
+        return
+    if "cells" not in cache:
+        wanted = [f for c in COUNTIES for f in _acs_fips(c)]
+        cache["cells"] = _acs_fetch(ctx, year, key, wanted)
+    mine = tuple(_acs_fips(city))
+    rows = {}
+    for geoid, cells in cache["cells"].items():
+        if not geoid.startswith(mine):
+            continue
+        report["fetched"] += 1
+        rec = acs_tract_record(cells)
+        if not rec["renters"]:      # tracts with renters but no published median stay in, so coverage can be judged
+            report["rejected"]["no renter homes"] = report["rejected"].get("no renter homes", 0) + 1
+            continue
+        rows[geoid] = {**rec, "year": year}
+        report["kept"] += 1
+    if not rows:
+        raise FetchError("no tract rents for this city")
+    ctx.store.write_lookup(name, rows, ACS_COLUMNS)
+    ctx.state.update(census_rents_year=year, census_rents_version=version, census_rents_checked=ctx.today.isoformat())
+
+
+# ---- HUD Small Area Fair Market Rents, by ZIP code and bedrooms ----------------------------------------------------
+# A fair market rent is the 40th percentile of gross rent (rent plus utilities) paid by recent movers into
+# standard-quality homes, set for a federal fiscal year. Not a median: see engine/rents.py for how it is used.
+HUD_FMR = "https://www.huduser.gov/hudapi/public/fmr/data/{entity}"
+HUD_TOKEN_ENV = "HUD_CENSUS_API_KEY"       # the HUD USER API bearer token (repository secret)
+HUD_BEDS = {"efficiency": 0, "one-bedroom": 1, "two-bedroom": 2, "three-bedroom": 3, "four-bedroom": 4}
+SAFMR_COLUMNS = ["year"] + [f"b{i}" for i in range(5)]
+
+
+def _hud_beds(entry):
+    rec = {}
+    for k, v in entry.items():
+        i = HUD_BEDS.get(str(k).strip().lower())
+        if i is not None and to_float(v):
+            rec[f"b{i}"] = round(to_float(v))
+    return rec
+
+
+def parse_safmr(payload):
+    """One HUD FMR API answer for a county as (fiscal year, {zip: {"b0".."b4"}}, metro-wide {"b0".."b4"} or None).
+
+    In Small Area FMR areas (`smallarea_status` "1"), `data.basicdata` is a list: a "MSA level" entry and one entry
+    per ZIP code of the whole metro ("zip_code", "Efficiency", "One-Bedroom", ...). Elsewhere it is a single
+    metro-wide entry, which cannot tell one area from another (New York answers this way). The fiscal year is
+    `data.year`, or the entry's own `year`.
+    """
+    data = (payload or {}).get("data") or {}
+    basic = data.get("basicdata")
+    entries = basic if isinstance(basic, list) else [basic] if isinstance(basic, dict) else []
+    year, zips, metro = str(data.get("year") or ""), {}, None
+    for entry in entries:
+        year = year or str(entry.get("year") or "")
+        rec = _hud_beds(entry)
+        z = str(entry.get("zip_code") or entry.get("zipcode") or "").strip()
+        if not rec:
+            continue
+        if len(z) == 5 and z.isdigit():
+            zips[z] = rec
+        elif not z or "msa" in z.lower() or "metro" in z.lower():
+            metro = rec
+    return year or None, zips, metro
+
+
+def harvest_safmr(ctx, city, report):
+    """Small Area FMRs for the city's counties, re-read at most monthly (HUD publishes them once a fiscal year)."""
+    token = os.environ.get(HUD_TOKEN_ENV)
+    if not token:
+        report["skipped"] = f"no HUD USER API token ({HUD_TOKEN_ENV} not set)"
+        return
+    name = f"{city}_safmr"
+    checked = ctx.state.get("safmr_checked")
+    if ctx.store.read_lookup(name) and not ctx.full and checked and (ctx.today - dt.date.fromisoformat(checked)).days < ACS_REFRESH_DAYS:
+        report["skipped"] = f"checked {checked}; published once a fiscal year"
+        return
+    rows, years, metro_only = {}, set(), 0
+    for state, county in COUNTIES[city]["fips"]:
+        payload = ctx.client.get_json(HUD_FMR.format(entity=f"{state}{county}99999"), {}, headers={"Authorization": f"Bearer {token}"})
+        year, zips, metro = parse_safmr(payload)
+        report["fetched"] += len(zips) + (metro is not None)
+        if metro and "metro" not in rows:       # kept for a city-level cross-check only, under the key "metro"
+            rows["metro"] = {**metro, "year": year or ""}
+        if not zips:
+            metro_only += 1
+        for z, rec in zips.items():
+            rows[z] = {**rec, "year": year or ""}
+            years.add(year)
+            report["kept"] += 1
+    if metro_only:
+        report["rejected"]["county with a metro-wide FMR only"] = metro_only
+    if not rows:
+        raise FetchError("HUD returned no fair market rents for this city's counties")
+    ctx.store.write_lookup(name, rows, SAFMR_COLUMNS)
+    ctx.state.update(safmr_year=max((y for y in years if y), default=rows["metro"]["year"] if "metro" in rows else None),
+                     safmr_checked=ctx.today.isoformat())
 
 
 def parse_zip_months(text, wanted, months=LISTINGS_MONTHS):
@@ -299,6 +533,10 @@ def harvest(ctx, city, cache):
         ("Reported crime incidents", CRIME[city]["publisher"], lambda r: harvest_crime(ctx, city, r)),
         ("Residents per block group", "U.S. Census Bureau, 2020 Census", lambda r: harvest_population(ctx, city, r)),
         ("Rent index by ZIP code", "Zillow Observed Rent Index", lambda r: harvest_rents(ctx, city, r, cache)),
+        ("Rents tenants pay, by census tract", "U.S. Census Bureau, American Community Survey 5-year",
+         lambda r: harvest_census_rents(ctx, city, r, cache.setdefault("census", {}))),
+        ("Small Area Fair Market Rents by ZIP code", "U.S. Department of Housing and Urban Development (HUD USER)",
+         lambda r: harvest_safmr(ctx, city, r)),
         ("Listings by ZIP code", "Zillow Research", lambda r: harvest_listings(ctx, city, r, cache.setdefault("listings", {}))),
         ("Neighborhood boundaries", "City open data (GeoJSON)", lambda r: harvest_boundaries(ctx, city, r)),
     ]

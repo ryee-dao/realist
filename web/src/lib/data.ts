@@ -14,12 +14,28 @@ export interface City {
   /** Sales held per sale month, latest 24 months, including months after `through` that are still filling in. */
   byMonth: { month: string; count: number }[]
 }
-export interface Context {
+export interface Context extends RentPicture {
   crimeAreas: number; rentAreas: number; residents: number | null; crimeThrough: string | null
   violentRate: number | null; propertyRate: number | null; crimeYoY: number | null
   crimeTrend?: 'up' | 'down' | 'flat' | null   // 'flat' = change not statistically distinguishable from none
   rent: number | null; rentYoY: number | null; rentMonth: string | null; yield: number | null
   listingAreas?: number
+}
+/** Rent census: ACS 5-year median gross rent over the catchment's tracts (see engine/rents.py). */
+export interface RentPaid {
+  value: number; moe: number; renters: number; coverage: number; openShare: number; reliable: boolean
+  year: number; period: string                                   // dollars of `year`; survey `period`, e.g. "2020–2024"
+  today: number | null                                           // brought to today by the asking-rent change since `year`
+  beds: Record<string, number> | null                            // "0" studio … "5" five or more bedrooms
+}
+/** The rent figures side by side. `rent` (on Area/Context) is the headline; `rentYoY` is the asking-rent change. */
+export interface RentPicture {
+  rentAsking?: number | null                                     // Zillow asking rent, latest month
+  rentPaid?: RentPaid | null
+  rentHud?: { year: string | null; beds: Record<string, number>; metroWide?: boolean } | null   // HUD fair market rent: 40th percentile, recent movers; metroWide = one figure for the whole metro (city context only)
+  rentBasis?: 'blend' | 'asking' | 'paid' | 'survey' | null
+  rentLow?: number | null; rentHigh?: number | null; rentDisagree?: boolean | null
+  yieldLow?: number | null; yieldHigh?: number | null
 }
 /** Asking-side figures from Zillow Research by ZIP code (homes and condos). Never mixed with recorded sales. */
 export interface Listings {
@@ -42,7 +58,7 @@ export interface Overview {
   types: Record<string, { series: Series; kpi: Kpi; hist: { edges: number[]; counts: number[] } }>
   listings?: Listings | null
 }
-export interface Area {
+export interface Area extends RentPicture {
   key: string; name: string; group: string; lat: number | null; lon: number | null
   sales12: number; salesYoY: number | null; median12: number | null; medianYoY: number | null
   ppsf12: number | null; change5y: number | null; topType: string; topTypeShare: number; quarterly: (number | null)[]

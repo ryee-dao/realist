@@ -1,4 +1,5 @@
 // Types and small visuals shared by the New listings page and its detail panel.
+import { CSSProperties, useState } from 'react'
 import { City } from '../lib/data'
 import { usdCompact } from '../lib/format'
 
@@ -22,7 +23,7 @@ export type Card = {
   lastSale?: { date: string; price: number; recentResale?: boolean }
   plus: Item[]; minus: Item[]; tags?: string[]; signals?: string[]
   detail?: string   // <city>/listing-detail/<detail>.json
-  photo?: { findings: number; crops: { src: string; label: string }[]; credit: string | null; creditUrl: string | null
+  photo?: { findings: number; crops: CropRef[]; credit: string | null; creditUrl: string | null; allLow?: boolean
     condition: string | null; coverage: string | null; seen: string | null; possiblyEdited: boolean }
 }
 export type CardsDoc = {
@@ -32,6 +33,44 @@ export type CardsDoc = {
   cityFigures?: { growth1: number | null }
   summary: { cards: number }
   cards: Card[]
+}
+
+/** Where the model's box sits inside a crop, as fractions of the crop (engine crop_mark); null: the box is the crop. */
+export type Mark = { x: number; y: number; w: number; h: number } | null
+export type CropRef = { src: string; label: string; caption?: string; low?: boolean; mark?: Mark }
+
+export const LOW_MSG = 'Low confidence — may be wrong'
+
+/** The yellow "!" warning marker (same look and hover/tap behaviour as the few-sales marker on the Market page). */
+export function WarnMark({ tip = LOW_MSG }: { tip?: string }) {
+  return <button type="button" className="few-mark" aria-label={tip} data-tip={tip}>!</button>
+}
+
+/** A defect crop with the model's box outlined (decorative) and, when given, a short caption chip.
+ *  ``cover``: the image fills a square box (object-fit: cover), so the outline is mapped into what is visible. */
+export function CropImage({ src, alt, mark, low, caption, cover, marks = true, style, onSize }: {
+  src: string; alt: string; mark?: Mark; low?: boolean; caption?: string; cover?: boolean; marks?: boolean
+  style?: CSSProperties; onSize?: (naturalWidth: number) => void
+}) {
+  const [ratio, setRatio] = useState<number | null>(null)   // natural width / height
+  let m = mark ?? null
+  if (m && cover && ratio) {
+    // object-fit: cover crops the longer side symmetrically; re-express the mark in the visible square
+    const keep = ratio > 1 ? 1 / ratio : ratio
+    const off = (1 - keep) / 2
+    const map = (v: number, len: number) => ({ v: (v - off) / keep, len: len / keep })
+    if (ratio > 1) { const a = map(m.x, m.w); m = { ...m, x: a.v, w: a.len } } else { const a = map(m.y, m.h); m = { ...m, y: a.v, h: a.len } }
+    const x0 = Math.max(0, m.x), y0 = Math.max(0, m.y)
+    const x1 = Math.min(1, m.x + m.w), y1 = Math.min(1, m.y + m.h)
+    m = x1 > x0 && y1 > y0 ? { x: x0, y: y0, w: x1 - x0, h: y1 - y0 } : null
+  }
+  return <span className={`lc-cropbox${cover ? ' cover' : ''}`}>
+    <img src={`data/${src}`} alt={alt} loading="lazy" style={style}
+      onLoad={(e) => { const i = e.currentTarget; setRatio(i.naturalWidth / Math.max(1, i.naturalHeight)); onSize?.(i.naturalWidth) }} />
+    {marks && m && (!cover || ratio) && <span className={`lc-mark${low ? ' low' : ''}`} aria-hidden="true"
+      style={{ left: `${m.x * 100}%`, top: `${m.y * 100}%`, width: `${m.w * 100}%`, height: `${m.h * 100}%` }} />}
+    {marks && caption && <span className="lc-cap" aria-hidden="true">{caption}</span>}
+  </span>
 }
 
 export const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']

@@ -149,7 +149,8 @@ PHOTOS_PER_LISTING = 24         # default share of the gallery looked at (spread
 PHOTOS_PER_CALL = 12             # a larger selection is split across several `claude -p` calls
 RETENTION_DAYS = 30              # tags and crops are kept 30 days from the listing's posted date, then deleted
 CROP_DUPLICATE_IOU = 0.5         # two boxes on the same photo overlapping this much are one defect region
-CROP_MIN_CONFIDENCE = 0.6        # default for --crop-confidence
+CROP_MIN_CONFIDENCE = 0.0        # default for --crop-confidence: every finding with a usable box gets a crop
+LOW_CONFIDENCE = 0.6              # findings under this are shown with a "low confidence" warning
 # Photo-tagging order: listings most likely to show defects first.
 DISTRESS_SIGNALS = ("needs_work", "as_is", "investor_special", "distressed_sale", "disclosed_damage",
                     "no_repairs_or_inspections", "cash_only", "financing_limited", "estate_sale")
@@ -157,8 +158,10 @@ BELOW_MEDIAN_PCT = -30            # asking price (or $/sqft) at least 30% below 
 CROP_MAX_AREA = 0.30              # a box covering more than 30% of the photo is not a localised defect
 CROP_MAX_SIDE = 320
 CROPS_DISABLED_SOURCES = set()    # publisher names (any case/spacing, e.g. "movoto") whose crops are never kept
-PHOTO_DISABLED_SOURCES = {"everyhome"}   # publishers whose photos are never analysed (another publisher's gallery
-                                          # is used); EveryHome: robots.txt Content-Signal ai-train=no, use=reference
+PHOTO_DISABLED_SOURCES = set()    # publishers whose photos are never analysed (another publisher's gallery is used).
+                                  # EveryHome was here until the owner enabled it: its robots.txt signals
+                                  # search=yes, ai-train=no, use=reference and sets no ai-input restriction; photos
+                                  # are only read by a model at analysis time, never used for training.
 
 # ---------------------------------------------------------------------------- text signals
 
@@ -1324,11 +1327,16 @@ def group_findings(tags, facts=None):
             rooms = 1
             if g["legacy"]:
                 rooms = min(n_photos, cap if cap is not None else ROOM_CAP_UNKNOWN)
-            items = Counter(x.get("item") for x in dets if x.get("item"))
-            item = best.get("item") or (items.most_common(1)[0][0] if items else None)
+            named = Counter(x.get("item") for x in dets if x.get("item"))
+            item = best.get("item") or (named.most_common(1)[0][0] if named else None)
+            crops = {}   # crop name -> where the model's box sits in it (first, most confident detection wins)
+            for x in sorted(dets, key=lambda x: -x["confidence"]):
+                if x.get("crop") and x["crop"] not in crops:
+                    crops[x["crop"]] = x.get("mark")
             findings.append({"type": dtype, "item": item, "room": room, "rooms": rooms, "confidence": best["confidence"],
+                             "lowConfidence": best["confidence"] < LOW_CONFIDENCE,
                              "photos": n_photos, "positions": positions, "evidence": best.get("evidence", ""),
-                             "crops": [x["crop"] for x in sorted(dets, key=lambda x: -x["confidence"]) if x.get("crop")],
+                             "crops": list(crops), "marks": list(crops.values()),
                              "approximate": g["legacy"] or cap is not None and len(items) > 1})
     findings.sort(key=lambda f: (-DEFECT_WEIGHTS.get(f["type"], 0) * f["confidence"], f["type"], f["room"]))
     return findings
@@ -1554,17 +1562,80 @@ def _iou(a, b):
     return inter / union if union else 0.0
 
 
+def image_size(data):
+    """(width, height) from a JPEG, PNG, GIF or WebP file's header, or None. Standard library only."""
+    try:
+        if data[:8] == b"\x89PNG\r\n\x1a\n":
+            return int.from_bytes(data[16:20], "big"), int.from_bytes(data[20:24], "big")
+        if data[:6] in (b"GIF87a", b"GIF89a"):
+            return int.from_bytes(data[6:8], "little"), int.from_bytes(data[8:10], "little")
+        if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+            kind = data[12:16]
+            if kind == b"VP8 ":
+                return int.from_bytes(data[26:28], "little") & 0x3FFF, int.from_bytes(data[28:30], "little") & 0x3FFF
+            if kind == b"VP8L":
+                bits = int.from_bytes(data[21:25], "little")
+                return (bits & 0x3FFF) + 1, ((bits >> 14) & 0x3FFF) + 1
+            if kind == b"VP8X":
+                return int.from_bytes(data[24:27], "little") + 1, int.from_bytes(data[27:30], "little") + 1
+            return None
+        if data[:2] == b"\xff\xd8":
+            i = 2
+            while i + 9 < len(data):
+                if data[i] != 0xFF:
+                    i += 1
+                    continue
+                marker = data[i + 1]
+                if marker in (0xD8, 0x01) or 0xD0 <= marker <= 0xD7:
+                    i += 2
+                    continue
+                length = int.from_bytes(data[i + 2:i + 4], "big")
+                if 0xC0 <= marker <= 0xCF and marker not in (0xC4, 0xC8, 0xCC):
+                    return int.from_bytes(data[i + 7:i + 9], "big"), int.from_bytes(data[i + 5:i + 7], "big")
+                i += 2 + length
+    except (IndexError, ValueError):
+        return None
+    return None
+
+
+def crop_mark(box, width, height, rect=None):
+    """Where the model's box sits inside its crop, as fractions of the crop {x, y, w, h} (0-1), for the page to
+    outline; None when the box fills (nearly) the whole crop. ``rect`` is the crop's pixel rectangle (default: the
+    rectangle ``crop_rect`` cuts for this box; for a shared crop, the rectangle of the crop it shares)."""
+    l, t, r, b = rect or crop_rect(box, width, height)
+    cw, ch = max(1, r - l), max(1, b - t)
+    x0, y0 = box["x"] * width, box["y"] * height
+    x1, y1 = x0 + box["w"] * width, y0 + box["h"] * height
+    fx0, fy0 = min(max((x0 - l) / cw, 0.0), 1.0), min(max((y0 - t) / ch, 0.0), 1.0)
+    fx1, fy1 = min(max((x1 - l) / cw, 0.0), 1.0), min(max((y1 - t) / ch, 0.0), 1.0)
+    if fx1 - fx0 >= 0.9 and fy1 - fy0 >= 0.9 or fx1 <= fx0 or fy1 <= fy0:
+        return None
+    return {"x": round(fx0, 3), "y": round(fy0, 3), "w": round(fx1 - fx0, 3), "h": round(fy1 - fy0, 3)}
+
+
 def make_crops(workdir, files, tags, crop_dir, cropper, min_confidence=CROP_MIN_CONFIDENCE):
-    """Write one crop per localised, confident defect (no per-listing cap); boxes on the same photo that overlap
-    by CROP_DUPLICATE_IOU or more are one region and get one crop. Sets ``crop`` on each defect cut."""
+    """Write one crop per defect with a usable box (every confidence by default; no per-listing cap). Boxes on the
+    same photo that overlap by CROP_DUPLICATE_IOU or more are one region and share one crop. Sets ``crop`` and,
+    when the source size is readable, ``mark`` (the model's box inside the crop) on each defect."""
     candidates = [d for d in tags["defects"] if d.get("box") and d["confidence"] >= min_confidence]
     made, kept = 0, []
     for d in sorted(candidates, key=lambda d: -d["confidence"]):
-        if any(k["photo_index"] == d["photo_index"] and _iou(k["box"], d["box"]) >= CROP_DUPLICATE_IOU for k in kept):
+        path = Path(workdir, files[d["photo_index"]][1])
+        try:
+            size = image_size(path.read_bytes()[:500_000])
+        except OSError:
+            size = None
+        same = next((k for k in kept if k["photo_index"] == d["photo_index"]
+                     and _iou(k["box"], d["box"]) >= CROP_DUPLICATE_IOU), None)
+        if same is not None:
+            if same.get("crop"):
+                d["crop"], d["cropVersion"] = same["crop"], CROP_VERSION
+                if size:
+                    d["mark"] = crop_mark(d["box"], *size, rect=crop_rect(same["box"], *size))
             continue
         kept.append(d)
         try:
-            data = cropper(Path(workdir, files[d["photo_index"]][1]), d["box"])
+            data = cropper(path, d["box"])
         except (OSError, ValueError, subprocess.SubprocessError) as exc:
             print(f"  crop skipped: {exc}", file=sys.stderr)
             continue
@@ -1574,6 +1645,8 @@ def make_crops(workdir, files, tags, crop_dir, cropper, min_confidence=CROP_MIN_
         if not target.exists():
             target.write_bytes(data)
         d["crop"], d["cropVersion"] = name, CROP_VERSION
+        if size:
+            d["mark"] = crop_mark(d["box"], *size)
         made += 1
     return made
 
@@ -1711,57 +1784,83 @@ RECUT_LIMIT = 30                  # photos fetched per run to re-cut crops made 
 
 def recut_small_crops(cache, homes, city, crop_store, cropper, hold=None, loader=download_image, limit=RECUT_LIMIT,
                       log=print):
-    """Re-cut crops made before CROP_VERSION 2 whose box is under the minimum crop size, from the held photo or,
-    when the listing's gallery is unchanged, the publisher's photo at the same gallery position. Where neither is
-    available the old crop stays. Returns how many crops were replaced."""
+    """Backfill crops on stored entries, from the held photo or, when the listing's gallery is unchanged, the
+    publisher's photo at the same gallery position (at most ``limit`` photos a run):
+
+    - findings with a box but no crop (made when crops needed confidence 0.6) get one;
+    - crops cut before the minimum crop size (CROP_VERSION 1) whose box is under it are re-cut;
+    - crops with no ``mark`` get one (a version-1 crop is the box itself, so its mark is None without a fetch).
+    Entries taken down or from a publisher with crops switched off are left alone. Where the photo can't be had,
+    the defect is marked ``recutTried`` and not tried again. Returns how many crops or marks were added."""
     by_url = {u: h for h in homes for u in (h.get("urls") or [h["url"]])}
-    fetched, replaced = 0, 0
+    fetched, changed = 0, 0
     for url, record in cache.items():
-        todo = [d for d in (record.get("tags") or {}).get("defects") or []
-                if d.get("crop") and d.get("box") and d.get("cropVersion", 1) < CROP_VERSION and not d.get("recutTried")
-                and min(d["box"]["w"], d["box"]["h"]) < CROP_MIN_FRACTION]
+        if record.get("cropsRemoved") or crops_disabled(record.get("source")):
+            continue
+        defects = (record.get("tags") or {}).get("defects") or []
+        for d in defects:   # a version-1 crop is exactly the model's box: nothing to outline
+            if d.get("crop") and "mark" not in d and d.get("cropVersion", 1) < CROP_VERSION and d.get("box") \
+                    and min(d["box"]["w"], d["box"]["h"]) >= CROP_MIN_FRACTION:
+                d["mark"] = None
+                changed += 1
+        todo = [d for d in defects if d.get("box") and not d.get("recutTried") and d.get("gallery_position") is not None
+                and (not d.get("crop")
+                     or (d.get("cropVersion", 1) < CROP_VERSION and min(d["box"]["w"], d["box"]["h"]) < CROP_MIN_FRACTION)
+                     or "mark" not in d)]
         home = by_url.get(url)
         if not todo or home is None:
             continue
         subject = photo_subject(home)
         if not record_valid(record, subject):
             continue
-        for position in sorted({d.get("gallery_position") for d in todo} - {None}):
+        for position in sorted({d["gallery_position"] for d in todo}):
             if fetched >= limit:
-                return replaced
+                break
             if not 0 <= position < len(subject["photos"]):
                 continue
-            photo_url = subject["photos"][position]
+            here = [d for d in todo if d["gallery_position"] == position]
             source = hold.loader(city, url, loader) if hold is not None else loader
             fetched += 1
             try:
-                body, ext = source(photo_url)
+                body, ext = source(subject["photos"][position])
             except (OSError, ValueError) as exc:
-                log(f"{city}: crop re-cut skipped for {record.get('address')}: {exc}")
-                for d in todo:
-                    if d.get("gallery_position") == position:
-                        d["recutTried"] = True
+                log(f"{city}: crop backfill skipped for {record.get('address')}: {exc}")
+                for d in here:
+                    d["recutTried"] = True
                 continue
+            size = image_size(body)
             with tempfile.TemporaryDirectory(prefix="realist-recut-") as tmp:
                 path = Path(tmp, f"photo.{ext}")
                 path.write_bytes(body)
-                for d in todo:
-                    if d.get("gallery_position") != position:
+                cut = []          # (box, crop name) of crops made or kept on this photo, to share overlapping regions
+                for d in sorted(here, key=lambda d: (d.get("crop") is None, -d["confidence"])):
+                    needs_cut = not d.get("crop") or (d.get("cropVersion", 1) < CROP_VERSION
+                                                      and min(d["box"]["w"], d["box"]["h"]) < CROP_MIN_FRACTION)
+                    share = next(((bx, name) for bx, name in cut if _iou(bx, d["box"]) >= CROP_DUPLICATE_IOU), None)
+                    if needs_cut and share:
+                        d["crop"], d["cropVersion"] = share[1], CROP_VERSION
+                        d["mark"] = crop_mark(d["box"], *size, rect=crop_rect(share[0], *size)) if size else None
+                        changed += 1
                         continue
-                    try:
-                        data = cropper(path, d["box"])
-                    except (OSError, ValueError, subprocess.SubprocessError):
+                    if needs_cut:
+                        try:
+                            data = cropper(path, d["box"])
+                        except (OSError, ValueError, subprocess.SubprocessError):
+                            d["recutTried"] = True
+                            continue
+                        name = hashlib.sha256(data).hexdigest()[:20] + ".jpg"
+                        Path(crop_store).mkdir(parents=True, exist_ok=True)
+                        if not Path(crop_store, name).exists():
+                            Path(crop_store, name).write_bytes(data)
+                        d["crop"], d["cropVersion"] = name, CROP_VERSION
+                    d["mark"] = crop_mark(d["box"], *size) if size else None
+                    if size is None:
                         d["recutTried"] = True
-                        continue
-                    name = hashlib.sha256(data).hexdigest()[:20] + ".jpg"
-                    Path(crop_store).mkdir(parents=True, exist_ok=True)
-                    if not Path(crop_store, name).exists():
-                        Path(crop_store, name).write_bytes(data)
-                    d["crop"], d["cropVersion"] = name, CROP_VERSION
-                    replaced += 1
-    if replaced:
-        log(f"{city}: re-cut {replaced} small crops to the minimum crop size")
-    return replaced
+                    cut.append((d["box"], d["crop"]))
+                    changed += 1
+    if changed:
+        log(f"{city}: crop backfill added or re-cut {changed} crops and marks")
+    return changed
 
 
 def _strip_crops(record):
@@ -1871,9 +1970,12 @@ def _compact_photo(record, city, site_crops, facts=None, gallery_count=None, des
     cov = coverage(tags, facts or {}, gallery_count)
     score = condition_score(tags, cov["rating"], facts or {})
     site_crop = lambda name: f"analysis/crops/{city}/{name}" if Path(site_crops, name).exists() else None
-    findings = [{**{k_: f[k_] for k_ in ("type", "item", "room", "rooms", "confidence", "photos", "evidence", "approximate")},
-                 "positions": f["positions"], "crops": [c for c in map(site_crop, f["crops"]) if c]}
-                for f in group_findings(tags, facts or {})]
+    findings = []
+    for f in group_findings(tags, facts or {}):
+        shown = [(site_crop(c), m) for c, m in zip(f["crops"], f["marks"]) if site_crop(c)]
+        findings.append({**{k_: f[k_] for k_ in ("type", "item", "room", "rooms", "confidence", "lowConfidence", "photos",
+                                                  "evidence", "approximate")},
+                         "positions": f["positions"], "crops": [c for c, _ in shown], "marks": [m for _, m in shown]})
     labelled = [{"photo": gallery(x["photo_index"]), "text": x["text"]} for x in tags.get("staging_labels") or []]
     label_text = staging_label_text(description)
     if label_text:
@@ -2441,8 +2543,8 @@ def main(argv=None, make_backend=ClaudeCLI, make_codex=CodexCLI):
     args = parser.parse_args(argv)
     if args.limit < 0 or args.max_calls < 0 or not 1 <= args.k <= 60 or not 1 <= args.per_call <= 20:
         parser.error("--limit and --max-calls must be >= 0, --photos-per-listing 1-60, --photos-per-call 1-20")
-    if not 0 < args.crop_confidence <= 1:
-        parser.error("--crop-confidence must be in (0, 1]")
+    if not 0 <= args.crop_confidence <= 1:
+        parser.error("--crop-confidence must be in [0, 1]")
     if args.url and args.city and args.city not in PHOTO_CITIES:
         parser.error("--url photo tagging is Philadelphia-only for now")
     cities = [args.city] if args.city else CITY_IDS
