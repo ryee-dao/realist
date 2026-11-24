@@ -2004,7 +2004,7 @@ def _compact_photo(record, city, site_crops, facts=None, gallery_count=None, des
 # ---------------------------------------------------------------------------- scheduling: usage, mode, backends
 
 SLOW_LIMIT = 5                    # listings per run in slow mode
-SLOW_5H, SLOW_7D = 0.60, 0.65     # slow down at 60% of the 5-hour or 65% of the weekly limit (or budget)
+SLOW_5H, SLOW_7D = 0.60, 0.75     # slow down at 60% of the 5-hour or 75% of the weekly limit (or budget)
 BUDGET_5H_USD = 1.00              # stand-in budgets for the ledger estimate, in the CLI's API-equivalent dollars;
 BUDGET_7D_USD = 10.00             # calibrate against /usage: they only count this tagger's own runs
 COOL_DOWN_HOURS = 5               # after a usage-limit stop with no reset time, wait this long
@@ -2278,7 +2278,7 @@ def analyse_city(root, city, *, backend=None, model=DEFAULT_MODEL, limit=20, max
                  per_call=PHOTOS_PER_CALL, cache_dir=None, history=True, dry_run=False, loader=download_image,
                  cropper="auto", crop_confidence=CROP_MIN_CONFIDENCE, urls=None, now=None, log=print,
                  codex=None, codex_share=0.0, listings_root=None, cards=None, slow_limit=SLOW_LIMIT,
-                 budget_5h=BUDGET_5H_USD, budget_7d=BUDGET_7D_USD, force_mode=None, hold=None):
+                 budget_5h=BUDGET_5H_USD, budget_7d=BUDGET_7D_USD, force_mode=None, hold=None, max_minutes=0):
     """Text signals for every listing; photo tags and defect crops (Philadelphia only) through ``backend``.
 
     Returns (document, report). Unless dry_run, writes ``<root>/<city>/listing-tags.json``, the photo-tag cache
@@ -2347,7 +2347,16 @@ def analyse_city(root, city, *, backend=None, model=DEFAULT_MODEL, limit=20, max
             queue.append((tier, rank, home, subject, reason, chosen))
         queue.sort(key=lambda q: q[2].get("date") or "", reverse=True)   # newest first within a tier
         queue.sort(key=lambda q: (q[0], q[1]))
+        started, over = time.monotonic(), None
         for tier, rank, home, subject, reason, chosen in queue:
+            # Runs may be uncapped (large --limit): the guards are the clock and the plan usage the CLI reports.
+            if not dry_run and max_minutes and time.monotonic() - started >= max_minutes * 60:
+                report["stopped"] = f"time budget of {max_minutes} minutes reached"
+                break
+            if over:
+                report["stopped"] = over
+                log(f"{city}: {over}; stopping, the next run starts in slow mode")
+                break
             if backends.get(chosen) is None and not dry_run:
                 chosen = "claude"
             active = backends.get(chosen)
@@ -2398,6 +2407,13 @@ def analyse_city(root, city, *, backend=None, model=DEFAULT_MODEL, limit=20, max
                                         + u.get("cache_creation_input_tokens", 0), "output": u.get("output_tokens", 0),
                                         "usd": record.get("apiEquivalentUsd") or 0, "rateLimits": record.get("rateLimits") or {}},
                           now)
+            if mode == "normal" and force_mode is None and chosen == "claude":
+                stored = record.get("rateLimits") or {}     # same two shapes decide_mode reads from the ledger
+                seen = {_window_name(k_): v for k_, v in stored.items() if _window_name(k_) and isinstance(v, dict)}
+                seen.update(rate_limit_windows(stored.values()))
+                u5, u7 = _utilization(seen.get("five_hour", {})), _utilization(seen.get("seven_day", {}))
+                if (u5 or 0) >= SLOW_5H or (u7 or 0) >= SLOW_7D:
+                    over = f"plan usage reached the slow-down mark mid-run: 5-hour {100 * (u5 or 0):.0f}%, weekly {100 * (u7 or 0):.0f}%"
             report["byBackend"][chosen] += 1
             model_used = backend_model(active)
             record.update(key=cache_key(subject, model_used), photoListingUrl=subject["photoListingUrl"], model=model_used,
@@ -2518,6 +2534,7 @@ def main(argv=None, make_backend=ClaudeCLI, make_codex=CodexCLI):
     parser.add_argument("--cards", type=Path, help="listing-cards.json for slow-mode ranking (default <output>/<city>/)")
     parser.add_argument("--mode", choices=["auto", "normal", "slow"], default="auto",
                         help="auto: slow down near the usage thresholds (default); normal or slow to force")
+    parser.add_argument("--max-minutes", type=float, default=0, help="stop starting new listings after this many minutes (0 = no clock)")
     parser.add_argument("--slow-limit", type=int, default=SLOW_LIMIT, help=f"listings per run in slow mode ({SLOW_LIMIT})")
     parser.add_argument("--budget-5h-usd", type=float, default=BUDGET_5H_USD,
                         help="ledger stand-in for the 5-hour limit, in the CLI's API-equivalent dollars")
@@ -2625,7 +2642,7 @@ def main(argv=None, make_backend=ClaudeCLI, make_codex=CodexCLI):
                                    log=lambda message: print(message, flush=True), codex=codex, codex_share=share,
                                    listings_root=args.listings, cards=load_cards(args.cards) if args.cards else None,
                                    slow_limit=args.slow_limit, budget_5h=args.budget_5h_usd, budget_7d=args.budget_7d_usd,
-                                   force_mode=None if args.mode == "auto" else args.mode,
+                                   force_mode=None if args.mode == "auto" else args.mode, max_minutes=args.max_minutes,
                                    hold=hold if city in PHOTO_CITIES and not args.no_photos else None)
         s = doc["summary"]
         line = (f"{city}: {s['listings']} listings, {s['withDescription']} with descriptions, "

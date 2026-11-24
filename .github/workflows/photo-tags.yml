@@ -1,7 +1,8 @@
 name: Photo tags
 
-# Tags Philadelphia listing photos with Claude Code (the owner's plan, via CLAUDE_CODE_OAUTH_TOKEN), up to 20
-# listings a run, every 5 hours. engine/listing_analysis.py slows down to 5 listings near the usage thresholds and
+# Tags Philadelphia listing photos with Claude Code (the owner's plan, via CLAUDE_CODE_OAUTH_TOKEN), every 5 hours, with no
+# listing cap: a run stops at 75 minutes or when plan usage crosses the slow-down marks (60% 5-hour, 75% weekly).
+# engine/listing_analysis.py then tags only 5 listings a run and
 # stops cleanly at a usage limit; the next run resumes from the store. The analysis store, defect crops, usage
 # ledger and tag history live under listing-analysis/ on the `data` branch, next to the harvest store; the daily
 # Data pipeline publishes listing-tags.json and the crops with the site.
@@ -18,8 +19,8 @@ on:
   workflow_dispatch:
     inputs:
       limit:
-        description: "Listings per run in normal mode"
-        default: "20"
+        description: "Listings per run in normal mode (uncapped by default; usage and the clock are the guards)"
+        default: "1000"
       mode:
         description: "auto, normal or slow"
         default: "auto"
@@ -152,7 +153,7 @@ jobs:
           share=0
           if [ "${{ needs.check.outputs.codex }}" != "none" ]; then share=0.2; fi
           python -m engine.listing_analysis --city philadelphia --output photo-data --listings harvested-listings \
-            --cache-dir store/listing-analysis --limit "${{ inputs.limit || '20' }}" --mode "${{ inputs.mode || 'auto' }}" \
+            --cache-dir store/listing-analysis --limit "${{ inputs.limit || '1000' }}" --max-calls 100000 --max-minutes 75 --mode "${{ inputs.mode || 'auto' }}" \
             --codex-share "$share" --photo-hold-max-gb 0.6
 
       # Codex can refresh its tokens in any run; the refreshed file must replace the secret or the next run breaks.

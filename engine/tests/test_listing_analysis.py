@@ -896,7 +896,7 @@ class LedgerAndModeTests(unittest.TestCase):
         mode, why = la.decide_mode([entry(1, 0.61)], NOW, budget_5h=1.0)
         self.assertEqual(mode, "slow")
         self.assertIn("estimate of this tagger's own usage", why)
-        week = [entry(24 * d, 1.4) for d in range(1, 6)]                    # $7 of $10 over the week
+        week = [entry(24 * d, 1.6) for d in range(1, 6)]                    # $8 of $10 over the week
         self.assertEqual(la.decide_mode(week, NOW, budget_7d=10.0)[0], "slow")
         self.assertEqual(la.decide_mode([entry(1, 0.9, "codex")], NOW, budget_5h=1.0)[0], "normal")  # Claude budget only
 
@@ -907,7 +907,7 @@ class LedgerAndModeTests(unittest.TestCase):
         mode, why = la.decide_mode([high], NOW)
         self.assertEqual(mode, "slow")
         self.assertIn("reported by the CLI", why)
-        week = entry(1, 0.0, rateLimits={"seven_day": {"used_percentage": 66}})
+        week = entry(1, 0.0, rateLimits={"seven_day": {"used_percentage": 76}})
         self.assertEqual(la.decide_mode([week], NOW)[0], "slow")
 
     def test_cool_down(self):
@@ -1343,7 +1343,7 @@ class RateLimitShapeTests(unittest.TestCase):
         mode, why = la.decide_mode([stored], NOW, budget_5h=1.0)
         self.assertEqual(mode, "normal")
         self.assertIn("weekly 49%", why)
-        high = entry(1, 0.0, rateLimits={"unknown": dict(info, unifiedWindows={"seven_day": {"utilization": 0.66}})})
+        high = entry(1, 0.0, rateLimits={"unknown": dict(info, unifiedWindows={"seven_day": {"utilization": 0.76}})})
         self.assertEqual(la.decide_mode([high], NOW)[0], "slow")
 
 
