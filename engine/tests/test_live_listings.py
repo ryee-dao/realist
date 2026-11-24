@@ -66,6 +66,7 @@ class SourceTests(unittest.TestCase):
         html = (data + '<span class=property-info-status><span></span>Active</span><tr><td>11/20/2026<td>$200,000<td><td>Listed Price</table>'
                 + sizes + '<meta itemprop=latitude content=40.0894><meta itemprop=longitude content=-75.0292>'
                 + '<p class=listing-type-label>Property Type</div><div class=col-xs-6><span class=listing-feature-value-display> Townhouse </span>')
+        self.assertIsNone(weichert.property_row(Page(html.replace("Condo for sale", "Boatslips for sale")), url))
         row = weichert.property_row(Page(html), url)
         self.assertEqual(row["date"], "2026-11-20")
         self.assertEqual({k: row[k] for k in feed.FACT_FIELDS},
@@ -187,12 +188,12 @@ class RotationTests(unittest.TestCase):
 
     def test_every_publisher_gets_a_turn_before_any_repeats(self):
         publishers, order = {}, []
-        for run in range(8):
+        names = feed.eligible("chicago")
+        for run in range(2 * len(names)):
             when = self.now + timedelta(hours=6 * run)
             with patch.object(feed, "read_source", side_effect=lambda source, *a: {
                     "source": source.NAME, "pages": 1, "partial": False, "interrupted": False, "error": None, "rows": [home("https://x/1")]}):
                 order.append(feed.collect("chicago", when, publishers, {})["provider"])
-        names = feed.eligible("chicago")
         self.assertEqual(order, names + names)
         self.assertNotIn("trulia", names)
         self.assertEqual(publishers["movoto"]["failures"], 0)

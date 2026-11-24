@@ -31,6 +31,8 @@ def property_row(page, url):
     if not home or not product:
         raise ValueError("Missing Weichert property markup")
     offer = product.get("offers", {})
+    if re.search(r"^(?:boatslips?|parking|garage spaces?)\b", home.get("description", ""), re.I):
+        return None
     if not re.search(r"\bfor sale\b", home.get("description", ""), re.I):
         return None
     if offer.get("url") != url or offer.get("priceCurrency") != "USD" or offer.get("availability") != "inStock":

@@ -27,6 +27,7 @@ on:
 permissions:
   contents: write     # push listing-analysis/ to the data branch
   pages: read         # find the deployed site, to read its area figures and listing cards
+  actions: write      # delete superseded photo-hold caches, so only the newest one counts against the cache quota
 
 concurrency:
   group: photo-tags
@@ -124,6 +125,23 @@ jobs:
             echo "::warning::CODEX_AUTH_JSON does not look like a ChatGPT login with a refresh token; Codex may fail"
           fi
 
+      # The photo hold (engine/photo_hold.py): photos of queued listings, shrunk, kept privately and briefly so tagging
+      # does not depend on the publisher at tagging time and partial galleries resume. It lives ONLY in this Actions
+      # cache: never on the data branch, in an artifact or in the Pages artifact. This workflow is its only writer.
+      - name: Restore the photo hold
+        uses: actions/cache/restore@v4
+        with:
+          path: photo-hold
+          key: photo-hold-v1-${{ github.run_id }}
+          restore-keys: photo-hold-v1-
+
+      - name: Fetch photos for the tagging queue
+        run: |
+          python -m engine.listing_analysis --city philadelphia --output photo-data --listings harvested-listings \
+            --cache-dir store/listing-analysis --mode "${{ inputs.mode || 'auto' }}" --fetch-photos \
+            --photo-fetch-limit 40 --photo-fetch-mb 300 --photo-hold-max-gb 0.6 \
+            || echo "::warning::Photo fetch failed; tagging falls back to the publishers"
+
       - name: Tag photos
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
@@ -135,7 +153,7 @@ jobs:
           if [ "${{ needs.check.outputs.codex }}" != "none" ]; then share=0.2; fi
           python -m engine.listing_analysis --city philadelphia --output photo-data --listings harvested-listings \
             --cache-dir store/listing-analysis --limit "${{ inputs.limit || '20' }}" --mode "${{ inputs.mode || 'auto' }}" \
-            --codex-share "$share"
+            --codex-share "$share" --photo-hold-max-gb 0.6
 
       # Codex can refresh its tokens in any run; the refreshed file must replace the secret or the next run breaks.
       - name: Save a refreshed Codex login back to its secret
@@ -158,6 +176,25 @@ jobs:
       - name: Remove the Codex login from the runner
         if: always()
         run: rm -rf "$RUNNER_TEMP/codex-home" "$RUNNER_TEMP/codex-auth.sha256"
+
+      - name: Save the photo hold (Actions cache only)
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: photo-hold
+          key: photo-hold-v1-${{ github.run_id }}
+
+      - name: Drop superseded photo-hold caches
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh cache list --repo "$GITHUB_REPOSITORY" --key photo-hold-v1- --json id,key --jq '.[] | select(.key != "photo-hold-v1-${{ github.run_id }}") | .id' \
+            | while read -r id; do gh cache delete "$id" --repo "$GITHUB_REPOSITORY" || true; done
+
+      - name: Check that no held photo reaches the data branch
+        if: always()
+        run: python -m engine.photo_hold --check photo-data --check-store store/listing-analysis
 
       - name: Save the analysis store
         if: always()

@@ -10,3 +10,6 @@ web/dist/
 # The harvest store lives on the `data` branch, and the site's JSON is rebuilt from it on every run.
 /store/
 /web/public/data/
+
+# Private, short-term photo holding area for the tagger (engine/photo_hold.py); never committed or deployed.
+/photo-hold/

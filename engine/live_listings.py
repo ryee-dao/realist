@@ -20,11 +20,11 @@ from tempfile import NamedTemporaryFile
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
-from .listing_sources import atproperties, coldwell_banker, everyhome, movoto, onekey, trulia, weichert
+from .listing_sources import atproperties, coldwell_banker, everyhome, movoto, northrop, onekey, trulia, urban, weichert
 from .listing_sources.pages import CITIES, Blocked, InactiveListing, fetch, valid_price, zip_of
 
 PROVIDERS = {"movoto": movoto, "weichert": weichert, "coldwell_banker": coldwell_banker, "everyhome": everyhome,
-             "atproperties": atproperties, "onekey": onekey, "trulia": trulia}
+             "atproperties": atproperties, "onekey": onekey, "trulia": trulia, "northrop": northrop, "urban": urban}
 # Left out of the rotation until the owner decides otherwise; `--source` still reads them on request.
 PAUSED = {"trulia": "answered HTTP 403 to every search page in November 2026"}
 PAGE_LIMIT = 8
@@ -49,7 +49,7 @@ def read_properties(source, links, now, load, pause):
     """Rows from property pages (publishers that publish the list date only there), and the error that stopped them."""
     rows = []
     for url in links[:PROPERTY_LIMIT]:
-        pause(1)
+        pause(getattr(source, "REQUEST_INTERVAL", 1))
         try:
             row = source.property_row(load(url), url)
         except SOURCE_ERRORS as exc:

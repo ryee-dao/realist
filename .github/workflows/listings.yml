@@ -1,7 +1,7 @@
 name: Harvest live listings
 
-# Four light runs a day. Each run reads one publisher per city (the one tried longest ago), so every publisher
-# is read about once a day per city it covers. Times are 07:23, 11:23, 15:23 and 19:23 US Eastern (EST).
+# Four light runs a day. Each run reads one publisher per city (the one tried longest ago), so eligible publishers
+# take turns across runs. Times are 07:23, 11:23, 15:23 and 19:23 US Eastern (EST).
 on:
   schedule:
     - cron: "23 0,12,16,20 * * *"
@@ -35,6 +35,22 @@ jobs:
         name: Refresh listings and galleries
         continue-on-error: true
         run: python -m engine.live_listings --output harvested-listings
+      - name: Summarize the hosted scout
+        if: always()
+        run: |
+          python - <<'PYTHON' >> "$GITHUB_STEP_SUMMARY"
+          import json
+          from pathlib import Path
+          print("| City | Source | Snapshot | Listings | With photos | With descriptions |")
+          print("|---|---|---|---:|---:|---:|")
+          for city in ("philadelphia", "nyc", "chicago"):
+              file = Path("harvested-listings") / city / "new-listings.json"
+              snapshot = json.loads(file.read_text()) if file.exists() else {}
+              rows = snapshot.get("rows", [])
+              status = "stale" if snapshot.get("stale") else snapshot.get("status", "missing")
+              print(f"| {city} | {snapshot.get('source', '—')} | {status} | {len(rows)} | "
+                    f"{sum(bool(r.get('photos')) for r in rows)} | {sum(bool(r.get('description')) for r in rows)} |")
+          PYTHON
       - uses: actions/cache/save@v4
         if: always()
         with:

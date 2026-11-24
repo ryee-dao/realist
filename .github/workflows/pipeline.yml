@@ -98,12 +98,10 @@ jobs:
             if [ ! -s "$snapshot" ]; then
               python -m engine.live_listings --city "$city" --output harvested-listings || echo "::warning::Could not refresh $city listings"
             fi
+            # The raw snapshot holds publishers' full descriptions and photo links, so it is never copied into
+            # the site. The pages read listing-cards.json, which carries only our own figures and short quotes.
             mkdir -p "web/public/data/$city"
-            if [ -s "$snapshot" ]; then
-              cp "$snapshot" "web/public/data/$city/"
-            else
-              echo '{"status":"unavailable"}' > "web/public/data/$city/new-listings.json"
-            fi
+            rm -f "web/public/data/$city/new-listings.json" "web/public/data/$city/listings.json"
           done
           # Listing tags: text signals for every city, plus the photo tags and defect crops the Photo tags workflow
           # keeps on the data branch (store/listing-analysis); writes <city>/listing-tags.json and analysis/crops/.
@@ -111,6 +109,11 @@ jobs:
             --cache-dir store/listing-analysis || echo "::warning::Could not build listing tags"
           # The New listings page's cards: merged listings + this run's area figures and price model (and tags if present)
           python -m engine.listing_cards --output web/public/data --listings harvested-listings --store store || echo "::warning::Could not build listing cards"
+
+      # Publish guard: only defect crops may ship; held photos (engine/photo_hold.py) and publisher photo URLs in the
+      # analysis store must never reach the site or the data branch.
+      - name: Check that no held photo is published
+        run: python -m engine.photo_hold --check web/public/data --check-store store/listing-analysis
 
       - name: Build the site
         working-directory: web

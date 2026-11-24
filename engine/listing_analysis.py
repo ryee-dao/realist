@@ -134,6 +134,8 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 
+from .photo_hold import HOLD_DIR, PhotoHold
+
 DEFAULT_MODEL = "haiku"           # Claude Code alias for the current Haiku model
 PROMPT_VERSION = "listing-tags-v4"   # v3: staging labels, edit suspicions, empty/furnished pairs; v4: room ids
 USER_AGENT = "Realist/2.0 (public housing data research)"
@@ -1423,6 +1425,49 @@ def magick_cropper(binary, run=subprocess.run, timeout=20):
     return crop
 
 
+HOLD_MAX_SIDE = 1024              # photos held for tagging are shrunk to this longest side (the model needs no more)
+HOLD_QUALITY = 80
+
+
+def pillow_shrinker(Image):
+    def shrink(path):
+        with Image.open(path) as im:
+            im.seek(0)
+            part = im.convert("RGB")
+        part.thumbnail((HOLD_MAX_SIDE, HOLD_MAX_SIDE))
+        clean = Image.new("RGB", part.size)
+        clean.paste(part)
+        buf = io.BytesIO()
+        clean.save(buf, "JPEG", quality=HOLD_QUALITY, optimize=True)
+        return buf.getvalue()
+    return shrink
+
+
+def magick_shrinker(binary, run=subprocess.run, timeout=20):
+    """Shrink with ImageMagick: same guards as magick_cropper (no shell, explicit input format, -strip, timeout)."""
+    def shrink(path):
+        fmt = _MAGICK_FORMAT.get(Path(path).suffix.lstrip(".").lower())
+        if not fmt:
+            raise ValueError("unsupported image type for shrinking")
+        side = HOLD_MAX_SIDE
+        out = run([binary, "-limit", "memory", "256MiB", "-limit", "time", str(timeout), f"{fmt}:{Path(path).resolve()}[0]",
+                   "-resize", f"{side}x{side}>", "-strip", "-quality", str(HOLD_QUALITY), "jpeg:-"],
+                  capture_output=True, timeout=timeout)
+        if out.returncode or not out.stdout.startswith(b"\xff\xd8"):
+            raise ValueError("ImageMagick shrink failed")
+        return out.stdout
+    return shrink
+
+
+def load_shrinker():
+    """A shrink function path -> JPEG bytes (longest side HOLD_MAX_SIDE): Pillow, else ImageMagick, else None."""
+    Image = load_pillow()
+    if Image is not None:
+        return pillow_shrinker(Image)
+    binary = shutil.which("magick") or shutil.which("convert")
+    return magick_shrinker(binary) if binary else None
+
+
 def load_cropper():
     """A crop function (path, box) -> JPEG bytes: Pillow if importable, else ImageMagick, else None."""
     Image = load_pillow()
@@ -1564,7 +1609,8 @@ def analyse_photos(row, backend, k, loader=download_image, crop_dir=None, croppe
     used = [pos for _, _, pos in files]
     for d in tags["defects"]:
         d["gallery_position"] = used[d["photo_index"]]
-    return {"positions": used, "photoUrls": [row["photos"][p] for p in used], "tags": tags, "calls": calls,
+    # no publisher photo URLs are stored: gallery positions are enough to point at a photo on the listing page
+    return {"positions": used, "tags": tags, "calls": calls,
             "url": row["url"], "address": row.get("address"), "date": row.get("date"), "price": row.get("price"),
             "source": row.get("source"), "usage": dict(usage), "apiEquivalentUsd": round(cost, 6),
             "seconds": round(time.monotonic() - started, 1), "servedBy": sorted(served),
@@ -1655,6 +1701,8 @@ def apply_retention(cache, today, crop_store, site_crops, history_path=None):
     for url in list(cache):
         record = cache[url]
         posted = _posted(record)
+        if record.pop("photoUrls", None) is not None:   # older entries kept publisher photo URLs; the store holds none
+            changed = True
         if photos_disabled(record.get("source")):
             # photos from a publisher excluded from photo analysis: drop the photo tags and crops at once, no history
             removed.update(_strip_crops(record) + record.get("cropsRemovedNames", []))
@@ -1970,7 +2018,7 @@ def analyse_city(root, city, *, backend=None, model=DEFAULT_MODEL, limit=20, max
                  per_call=PHOTOS_PER_CALL, cache_dir=None, history=True, dry_run=False, loader=download_image,
                  cropper="auto", crop_confidence=CROP_MIN_CONFIDENCE, urls=None, now=None, log=print,
                  codex=None, codex_share=0.0, listings_root=None, cards=None, slow_limit=SLOW_LIMIT,
-                 budget_5h=BUDGET_5H_USD, budget_7d=BUDGET_7D_USD, force_mode=None):
+                 budget_5h=BUDGET_5H_USD, budget_7d=BUDGET_7D_USD, force_mode=None, hold=None):
     """Text signals for every listing; photo tags and defect crops (Philadelphia only) through ``backend``.
 
     Returns (document, report). Unless dry_run, writes ``<root>/<city>/listing-tags.json``, the photo-tag cache
@@ -2049,14 +2097,17 @@ def analyse_city(root, city, *, backend=None, model=DEFAULT_MODEL, limit=20, max
                 break
             report["planned"].append({"url": home["url"], "address": home.get("address"), "date": home.get("date"),
                                       "price": home.get("price"), "photos": len(subject["photos"]),
-                                      "calls": needed, "reason": reason, "backend": chosen})
+                                      "calls": needed, "reason": reason, "backend": chosen, "source": subject.get("source"),
+                                      "photoUrls": [subject["photos"][i] for i in choose_photos(subject["photos"], k)]})
             if dry_run:
                 report["calls"] += needed
                 continue
             report["calls"] += needed
             log(f"{city}: [{len(report['planned'])}] {home.get('address')} ({reason}; {chosen}; {needed} calls) ...")
             try:
-                record = analyse_photos(subject, active, k, loader, crop_store, cropper, per_call, crop_confidence)
+                # held photos first (engine/photo_hold.py), the publisher only for photos not held
+                home_loader = hold.loader(city, home["url"], loader) if hold is not None else loader
+                record = analyse_photos(subject, active, k, home_loader, crop_store, cropper, per_call, crop_confidence)
             except UsageLimit as exc:
                 ledger_append(ledger_path, {"at": now.isoformat(), "backend": chosen, "calls": needed, "limitHit": True,
                                             "resetsAt": exc.resets_at, "message": str(exc)[:200]}, now)
@@ -2094,6 +2145,8 @@ def analyse_city(root, city, *, backend=None, model=DEFAULT_MODEL, limit=20, max
                           descriptionLabel=staging_label_text(text_of(home)) or "", promptVersion=PROMPT_VERSION, analysedAt=now.isoformat(),
                           signals=text_signals(text_of(home)))
             cache[home["url"]] = record
+            if hold is not None:
+                hold.purge(city, home["url"])   # tagged and cropped: its held photos are no longer needed
             report["tagged"] += 1
             report["crops"] += sum(1 for d in record["tags"]["defects"] if d.get("crop"))
             report["usage"].update(record["usage"])
@@ -2109,6 +2162,8 @@ def analyse_city(root, city, *, backend=None, model=DEFAULT_MODEL, limit=20, max
             log(f"{city}:     done in {record['seconds']:.0f} s: {result_line(result)}")
 
     changed = False
+    if hold is not None and not dry_run and city in PHOTO_CITIES:
+        hold.expire(city, {h["url"]: h.get("date") for h in homes}, now, log)
     if not dry_run:
         history_path = cache_dir / "tag-history" / f"{city}.jsonl" if history else None
         changed = apply_retention(cache, now.date(), crop_store, site_crops, history_path)
@@ -2212,6 +2267,15 @@ def main(argv=None, make_backend=ClaudeCLI, make_codex=CodexCLI):
     parser.add_argument("--compare", type=int, default=0, metavar="N",
                         help="send N already-tagged listings to the other backend too; stored side by side, not published")
     parser.add_argument("--compare-report", action="store_true", help="print backend agreement from stored comparisons")
+    parser.add_argument("--photo-hold", type=Path, default=HOLD_DIR,
+                        help=f"private, short-term photo holding area, never published (default {HOLD_DIR}/)")
+    parser.add_argument("--no-photo-hold", action="store_true", help="always fetch photos from the publisher")
+    parser.add_argument("--fetch-photos", action="store_true",
+                        help="only fetch missing photos for the tagging queue into the photo hold; tag nothing")
+    parser.add_argument("--photo-fetch-limit", type=int, default=40, help="listings fetched per --fetch-photos run")
+    parser.add_argument("--photo-fetch-mb", type=float, default=300, help="megabytes fetched per --fetch-photos run")
+    parser.add_argument("--photo-hold-max-gb", type=float, default=2.0, help="size cap of the photo hold")
+    parser.add_argument("--purge-photo-hold", action="store_true", help="delete every held photo and exit")
     args = parser.parse_args(argv)
     if args.limit < 0 or args.max_calls < 0 or not 1 <= args.k <= 60 or not 1 <= args.per_call <= 20:
         parser.error("--limit and --max-calls must be >= 0, --photos-per-listing 1-60, --photos-per-call 1-20")
@@ -2221,6 +2285,35 @@ def main(argv=None, make_backend=ClaudeCLI, make_codex=CodexCLI):
         parser.error("--url photo tagging is Philadelphia-only for now")
     cities = [args.city] if args.city else CITY_IDS
     cache_dir = args.cache_dir or args.output / "analysis"
+    hold = None if args.no_photo_hold else PhotoHold(args.photo_hold, int(args.photo_hold_max_gb * 1e9))
+    if args.purge_photo_hold:
+        PhotoHold(args.photo_hold).purge_all()
+        print(f"photo hold {args.photo_hold} purged")
+        return 0
+    if args.fetch_photos:
+        if hold is None:
+            parser.error("--fetch-photos needs the photo hold")
+        for city in sorted(PHOTO_CITIES & set(cities)):
+            if not (args.output / city).is_dir() and not args.listings:
+                continue
+            _, plan = analyse_city(args.output, city, dry_run=True, model=args.model, limit=args.photo_fetch_limit,
+                                   max_calls=10 ** 6, k=args.k, per_call=args.per_call, cache_dir=args.cache_dir,
+                                   listings_root=args.listings, cards=load_cards(args.cards) if args.cards else None,
+                                   slow_limit=args.slow_limit, budget_5h=args.budget_5h_usd, budget_7d=args.budget_7d_usd,
+                                   force_mode=None if args.mode == "auto" else args.mode, log=lambda *_: None)
+            if plan["mode"] == "stop":
+                print(f"{city}: photo tagging is cooling down ({plan['modeReason']}); fetching anyway for the next run")
+            got = hold.fetch(city, plan["planned"], loader=download_image, shrink=load_shrinker(),
+                             listing_limit=args.photo_fetch_limit, byte_budget=int(args.photo_fetch_mb * 1e6),
+                             log=lambda m: print(m, flush=True))
+            homes = load_listings(args.listings or args.output, city)
+            expired = hold.expire(city, {h["url"]: h.get("date") for h in homes})
+            st = hold.status()
+            print(f"{city}: photo hold fetched {got['photos']} photos ({got['bytes'] / 1e6:.1f} MB) for "
+                  f"{got['listings']} queued listings; {got['ready']} ready, {got['failures']} failures, "
+                  f"hosts stopped {got['stoppedHosts'] or 'none'}, {expired} expired; hold now {st['listings']} listings, "
+                  f"{st['bytes'] / 1e6:.1f} MB", flush=True)
+        return 0
     if args.compare_report:
         for city in sorted(PHOTO_CITIES & set(cities)):
             print(format_compare_report(compare_report(cache_dir, city), city))
@@ -2250,7 +2343,8 @@ def main(argv=None, make_backend=ClaudeCLI, make_codex=CodexCLI):
     if args.remove_crops_source or args.remove_crops_url:
         for city in cities:
             n = remove_crops(cache_dir, city, args.remove_crops_source, args.remove_crops_url)
-            print(f"{city}: removed {n} crops; they will not be re-created")
+            held = PhotoHold(args.photo_hold).purge_where(city, args.remove_crops_source, args.remove_crops_url)
+            print(f"{city}: removed {n} crops and {held} held photo sets; crops will not be re-created")
         args.no_photos = True  # refresh listing-tags.json (and the site's crop copies) without tagging anything
     if args.city and args.city not in PHOTO_CITIES and not args.no_photos:
         print(f"{args.city}: photo tagging is Philadelphia-only for now; writing text signals only.")
@@ -2267,7 +2361,8 @@ def main(argv=None, make_backend=ClaudeCLI, make_codex=CodexCLI):
                                    log=lambda message: print(message, flush=True), codex=codex, codex_share=share,
                                    listings_root=args.listings, cards=load_cards(args.cards) if args.cards else None,
                                    slow_limit=args.slow_limit, budget_5h=args.budget_5h_usd, budget_7d=args.budget_7d_usd,
-                                   force_mode=None if args.mode == "auto" else args.mode)
+                                   force_mode=None if args.mode == "auto" else args.mode,
+                                   hold=hold if city in PHOTO_CITIES and not args.no_photos else None)
         s = doc["summary"]
         line = (f"{city}: {s['listings']} listings, {s['withDescription']} with descriptions, "
                 f"{s['photoTagged']} photo-tagged; signals {s['signals'] or 'none'}")
