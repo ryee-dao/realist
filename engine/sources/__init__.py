@@ -1,4 +1,5 @@
 """City adapters. Each one pulls an open public dataset into the shared schema."""
+import datetime as dt
 from dataclasses import dataclass, field
 
 from ..schema import Normalizer
@@ -14,6 +15,7 @@ class Context:
     today: object
     log: object = print
     reports: list = field(default_factory=list)
+    intake: list = field(default_factory=list)     # per source read this run: the newest records and their verdicts
 
 
 class SourceRun:
@@ -58,6 +60,10 @@ class SourceRun:
             self.report["last"] = pulls.get(self.report["name"])
         else:
             pulls[self.report["name"]] = {k: self.report[k] for k in ("fetched", "kept", "rejected")} | {"date": self.ctx.today.isoformat()}
+            sample = self.norm.sample()
+            if sample:
+                self.ctx.intake.append({"source": self.report["name"], "records": sample,
+                                        "readAt": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")})
         self.ctx.reports.append(self.report)
         r = self.report
         if r["skipped"]:

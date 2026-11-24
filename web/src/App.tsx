@@ -1,26 +1,34 @@
+import { lazy, Suspense, useEffect, useState } from 'react'
+import './styles/nav.css'
 import { City, Index, Status, useData } from './lib/data'
 import { useRoute, useTheme } from './lib/hooks'
 import { monthLabel, pct, timeAgo, usd } from './lib/format'
 import { site } from './site'
 import Sparkline from './charts/Sparkline'
 import Market from './pages/Market'
+import Drivers from './pages/Drivers'
 import AreasPage from './pages/Areas'
-import SalesPage from './pages/Sales'
+import SoldPage from './pages/Sold'
+import About from './pages/About'
 import NewListings from './pages/NewListings'
 import ComparePage from './pages/Compare'
 import ScreenerPage from './pages/Screener'
 import Pipeline from './pages/Pipeline'
-import About from './pages/About'
+
+// DuckDB-WASM and the page around it load only when Explore opens
+const Explore = lazy(() => import('./pages/Explore'))
 
 const ICON: Record<string, string> = {
   market: 'M3 17l5-6 4 3 6-8M3 21h18',
   areas: 'M12 21s-7-6.2-7-11a7 7 0 0114 0c0 4.800-7 11-7 11zm0-8.500a2.500 2.500 0 100-5 2.500 2.500 0 000 5z',
   listings: 'M3 11l9-8 9 8M5 10v11h14V10M9 21v-7h6v7',
-  sales: 'M4 6h16M4 12h16M4 18h10',
+  sold: 'M4 6h16M4 12h16M4 18h10',
   pipeline: 'M4 6h5v5H4zM15 13h5v5h-5zM9 8.500h3.500a2.500 2.500 0 012.500 2.500v2',
   find: 'M4 5h16l-6 7v6l-4 2v-8z',
   compare: 'M12 3v18M4 6h5v12H4zM15 6h5v12h-5z',
-  about: 'M12 21a9 9 0 100-18 9 9 0 000 18zm0-9v5m0-8.500v.010',
+  drivers: 'M4 6h10M4 12h16M4 18h6',
+  explore: 'M4 17l5-5-5-5M12 19h8',
+  about: 'M12 21a9 9 0 100-18 9 9 0 000 18zM12 16v-5M12 8h.01',
 }
 
 function Item({ id, label, href, on }: { id: string; label: string; href: string; on: boolean }) {
@@ -32,38 +40,56 @@ function Item({ id, label, href, on }: { id: string; label: string; href: string
   )
 }
 
+/** Pages that take a city. Old hashes keep working: #/city/sales now opens Sold prices. */
+const CITY_PAGES = ['find', 'areas', 'listings', 'compare', 'market', 'sold', 'drivers', 'explore']
+const ALIAS: Record<string, string> = { sales: 'sold' }
+const MAIN = [['find', 'Find areas'], ['areas', 'Areas'], ['listings', 'New listings'], ['compare', 'Crime']]
+const RESEARCH = [['market', 'Market'], ['sold', 'Sold prices'], ['drivers', 'Price drivers'], ['explore', 'Explore']]
+const LABEL: Record<string, string> = Object.fromEntries([...MAIN, ...RESEARCH, ['pipeline', 'Data pipeline'], ['about', 'About']])
+
 export default function App() {
   const route = useRoute()
   const [theme, toggleTheme] = useTheme()
+  const [menu, setMenu] = useState(false)
   const { data: index, error } = useData<Index>('index.json')
   const { data: status } = useData<Status>('status.json')
+  useEffect(() => setMenu(false), [route.city, route.page])
 
   const cities = index?.cities ?? []
   const city: City | undefined = cities.find((c) => c.id === route.city) ?? cities[0]
-  const global = route.city === null && (route.page === 'pipeline' || route.page === 'about')
-  const page = global ? route.page : ['market', 'areas', 'sales', 'listings', 'compare', 'find'].includes(route.page) ? route.page : 'find'
+  const asked = ALIAS[route.page] ?? route.page
+  const global = asked === 'about' || (route.city === null && asked === 'pipeline')
+  const page = global ? asked : CITY_PAGES.includes(asked) ? asked : 'find'
   const last = status?.last
   const warnings = last?.checks.filter((c) => c.status === 'warn').length ?? 0
-  const title = { market: 'housing market', areas: `by ${city?.areaNoun.toLowerCase()}`, sales: 'recent home sales', listings: 'new listings', compare: 'reported incidents', find: 'area finder' }[page] ?? ''
+  const noun = city?.areaNoun.toLowerCase() ?? 'area'
+  const title = { market: 'housing market', drivers: 'price drivers', areas: `by ${noun}`, sold: `sold prices by ${noun}`, explore: 'sales explorer', listings: 'new listings', compare: 'reported incidents', find: 'area finder' }[page] ?? ''
+  const href = (id: string) => (id === 'pipeline' || id === 'about' ? `#/${id}` : `#/${city?.id ?? ''}/${id}`)
+  const item = ([id, label]: string[]) => <Item key={id} id={id} label={label} href={href(id)} on={page === id} />
+  const inMore = !MAIN.some(([id]) => id === page)
 
   return (
     <div className="shell">
-      <aside className="side">
-        <a className="brand" href="#/">
-          <svg viewBox="0 0 32 32" width="22" height="22" aria-hidden="true"><path d="M6 25V13h4v12zm7 0V6h4v19zm7 0v-9h4v9z" fill="currentColor" /></svg>
-          REALIST
-        </a>
-        <div className="side-label">Explore</div>
-        <Item id="find" label="Find areas" href={`#/${city?.id ?? ''}/find`} on={page === 'find'} />
-        <Item id="areas" label="Areas" href={`#/${city?.id ?? ''}/areas`} on={page === 'areas'} />
-        <Item id="market" label="Market" href={`#/${city?.id ?? ''}/market`} on={page === 'market'} />
-        <Item id="compare" label="Crime" href={`#/${city?.id ?? ''}/compare`} on={page === 'compare'} />
-        <Item id="listings" label="New listings" href={`#/${city?.id ?? ''}/listings`} on={page === 'listings'} />
-        <Item id="sales" label="Recent sales" href={`#/${city?.id ?? ''}/sales`} on={page === 'sales'} />
-        <div className="side-label">Engine</div>
-        <Item id="pipeline" label="Data pipeline" href="#/pipeline" on={page === 'pipeline'} />
-        <Item id="about" label="About" href="#/about" on={page === 'about'} />
-        <div className="side-foot">
+      <aside className={`side ${menu ? 'menu-open' : ''}`}>
+        <div className="side-top">
+          <a className="brand" href="#/">
+            <svg viewBox="0 0 32 32" width="22" height="22" aria-hidden="true"><path d="M6 25V13h4v12zm7 0V6h4v19zm7 0v-9h4v9z" fill="currentColor" /></svg>
+            REALIST
+          </a>
+          <button className={`menu-btn ${inMore ? 'on' : ''}`} aria-expanded={menu} aria-controls="side-more" onClick={() => setMenu(!menu)}>
+            {inMore ? LABEL[page] : 'More'}
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" aria-hidden="true"><path d={menu ? 'M6 6l12 12M18 6L6 18' : 'M4 7h16M4 12h16M4 17h16'} /></svg>
+          </button>
+        </div>
+        <nav className="side-main" aria-label="Main">
+          {MAIN.map(item)}
+        </nav>
+        <div className="side-more" id="side-more">
+          <div className="side-label">Research</div>
+          <nav className="side-group" aria-label="Research">{RESEARCH.map(item)}</nav>
+          <div className="side-label">Site</div>
+          <nav className="side-group" aria-label="Site">{item(['pipeline', 'Data pipeline'])}{item(['about', 'About'])}</nav>
+          <div className="side-foot">
           {last && (
             <a className="status" href="#/pipeline">
               <i className={`dot ${!last.ok ? 'bad' : warnings ? 'warn' : 'ok'}`} />
@@ -82,6 +108,7 @@ export default function App() {
                 {t === 'dark' ? 'Dark' : 'Light'}
               </button>
             ))}
+          </div>
           </div>
         </div>
       </aside>
@@ -109,19 +136,21 @@ export default function App() {
               </div>
             </div>
             {page === 'market' && <Market key={city.id} city={city} />}
+            {page === 'drivers' && <Drivers key={city.id} city={city} />}
             {page === 'areas' && <AreasPage key={city.id} city={city} theme={theme} />}
             {page === 'listings' && <NewListings key={city.id} city={city} />}
-            {page === 'sales' && <SalesPage key={city.id} city={city} theme={theme} />}
+            {page === 'sold' && <SoldPage key={city.id} city={city} />}
+            {page === 'explore' && <Suspense fallback={<div className="loading">Loading the explorer…</div>}><Explore key={city.id} city={city} /></Suspense>}
             {page === 'compare' && <ComparePage key={city.id} city={city} theme={theme} />}
             {page === 'find' && <ScreenerPage key={city.id} city={city} theme={theme} />}
           </>
         )}
         {index && status && page === 'pipeline' && global && <Pipeline index={index} status={status} />}
-        {index && page === 'about' && global && <About index={index} />}
+        {page === 'about' && <About />}
 
         <footer className="footer">
           <span>Built from open public records. Figures are for research, not appraisal or financial advice.</span>
-          <span>Built by <a href={site.authorUrl}>{site.author}</a> · <a href={site.repoUrl}>Source on GitHub</a></span>
+          <span>Built by <a href={site.authorUrl} target="_blank" rel="noreferrer">{site.author}</a></span>
         </footer>
       </main>
     </div>

@@ -1,7 +1,7 @@
 // Run with: node src/lib/grades.test.mjs   (Node 22.18+ strips the TypeScript types in grades.ts)
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { blendOf, geoMean, gradeOf, percentiles, rankPool, robustness, tiersForSorted } from './grades.ts'
+import { activityPercentiles, blendOf, geoMean, gradeOf, LISTED_SHARE, percentiles, rankPool, robustness, tiersForSorted } from './grades.ts'
 
 const F = ['yield', 'growth1', 'growth5', 'price', 'activity', 'crime']
 
@@ -100,6 +100,55 @@ assert.ok(Math.abs(blendOf([50, 50]) - 50) < 1e-9)
   console.log(`  robustness (${Math.round(performance.now() - t0)} ms):`, top.join('; '))
   // stable between calls
   assert.deepEqual(robustness(rows, F, w).get(r.ranked[0].key), rb.get(r.ranked[0].key))
+}
+
+// 7. "Active market" composite: sales dominate, listings a minor part, no listings = sales alone
+{
+  assert.equal(LISTED_SHARE, 0.25)
+  const items = [
+    { k: 'a', sold: 100, active: 1, fresh: 1 },     // most sales, fewest listings
+    { k: 'b', sold: 90, active: 50, fresh: 50 },
+    { k: 'c', sold: 10, active: 99, fresh: 99 },    // fewest sales, most listings
+    { k: 'd', sold: 50, active: null, fresh: null },// no listing figures
+  ]
+  const p = activityPercentiles(items, (x) => x.k, (x) => x.sold, [(x) => x.active, (x) => x.fresh])
+  console.log('activity composite:', Object.fromEntries(p))
+  // listings cannot lift the area with the fewest sales above the busiest ones
+  assert.ok(p.get('c') < p.get('a') && p.get('c') < p.get('b'))
+  // no listing figures: ranked on sales alone, still has a percentile (not incomplete)
+  assert.ok(p.get('d') != null)
+  // with a 3/4 sales weight, blend values: a 0.75*87.5+0.25*16.7, b 0.75*62.5+0.25*50, c 0.75*12.5+0.25*83.3, d 37.5
+  const raw = { a: 0.75 * 87.5 + 0.25 * (100 / 6), b: 0.75 * 62.5 + 0.25 * 50, c: 0.75 * 12.5 + 0.25 * (500 / 6), d: 37.5 }
+  const order = Object.keys(raw).sort((x, y) => raw[x] - raw[y])
+  assert.deepEqual([...p.entries()].sort((x, y) => x[1] - y[1]).map((e) => e[0]), order)
+}
+
+// 8. Philadelphia, default weights (Rental income): S tier before (sales only) vs after (sales + listings)
+{
+  const data = JSON.parse(readFileSync(new URL('../../public/data/philadelphia/areas.json', import.meta.url)))
+  const pool = data.areas.filter((a) => a.median12 != null && a.sales12 >= 30)
+  const raw = {
+    yield: (a) => a.yield, growth1: (a) => a.priceGrowth1 ?? a.medianYoY, growth5: (a) => a.priceGrowth5 ?? a.change5y,
+    price: (a) => (a.median12 == null ? null : -a.median12), activity: (a) => a.sales12,
+    crime: (a) => (a.violentRate == null || a.propertyRate == null ? null : -(a.violentRate * 3 + a.propertyRate)),
+  }
+  const build = (withListings) => {
+    const pc = Object.fromEntries(F.map((f) => [f, f === 'activity' && withListings
+      ? activityPercentiles(pool, (a) => a.key, (a) => a.sales12, [(a) => a.listings?.active ?? null, (a) => a.listings?.newListings ?? null])
+      : percentiles(pool, (a) => a.key, raw[f])]))
+    return pool.map((a) => ({ key: a.key, pctl: Object.fromEntries(F.filter((f) => pc[f].has(a.key)).map((f) => [f, pc[f].get(a.key)])) }))
+  }
+  const w = { yield: 5, growth1: 1, growth5: 1, price: 1, activity: 2, crime: 1 }
+  const name = new Map(pool.map((a) => [a.key, a.name]))
+  const before = rankPool(build(false), F, w).ranked, after = rankPool(build(true), F, w).ranked
+  const fmt = (r) => r.filter((x) => x.tier === 'S').map((x) => `${name.get(x.key)} ${x.score}`).join(', ')
+  console.log(`Philadelphia default weights, ${pool.filter((a) => a.listings).length}/${pool.length} areas with listing figures`)
+  console.log('  S before:', fmt(before))
+  console.log('  S after: ', fmt(after))
+  const rb = new Map(before.map((x) => [x.key, x.rank]))
+  const moves = after.map((x) => Math.abs(x.rank - rb.get(x.key)))
+  const tierMoves = after.filter((x) => before.find((y) => y.key === x.key).tier !== x.tier).length
+  console.log(`  rank change: median ${moves.sort((a, b) => a - b)[moves.length >> 1]}, max ${Math.max(...moves)}; ${tierMoves} of ${after.length} areas changed tier`)
 }
 
 console.log('all grades checks passed')

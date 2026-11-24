@@ -50,6 +50,9 @@ def sale_id(document):
 
 
 def normalize(norm, row):
+    unit = f" #{row['unit_num']}" if row.get("unit_num") else ""
+    norm.peek(date=row.get("display_date"), price=row.get("price"), address=title(row.get("street_address")) + unit,
+              kind=title(row.get("cat")) or "No property record")
     if not row.get("cat"):
         return norm.reject("no matching property record")
     if (row.get("pc") or 1) > 1:
@@ -108,6 +111,7 @@ FORCED_SQL = "select distinct document_id doc from rtt_summary where document_ty
 
 
 def normalize_record(norm, row, shared=()):
+    norm.peek(date=row.get("sale_date"), price=row.get("sale_price"), address=title(row.get("location")), kind=title(row.get("cat")))
     if not row.get("doc"):
         return norm.reject("no deed reference")
     if row["doc"] in shared:
@@ -156,6 +160,7 @@ def harvest_property_records(ctx, multi=frozenset(), docs=frozenset(), sold=None
     for row in pulled:
         # the same sale is occasionally filed under a different document number in the two files
         day = str(row.get("sale_date") or "")[:10]
+        run.norm.peek(date=day, price=row.get("sale_price"), address=title(row.get("location")), kind=title(row.get("cat")))
         if str(row.get("doc")) not in docs and any(_days_apart(day, d) <= 45 for d in (sold or {}).get(row.get("parcel_number") or "", [])):
             run.norm.reject("already in the deeds file under another document")
             continue

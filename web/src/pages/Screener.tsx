@@ -1,12 +1,11 @@
 import '../styles/finder.css'
-import { useEffect, useMemo, useRef, useState } from 'react'
-import { Area, Areas, City, useData } from '../lib/data'
+import { useMemo, useRef, useState } from 'react'
+import { Area, Areas, City, Listings, useData } from '../lib/data'
 import { Theme } from '../lib/hooks'
-import { num, pct, usdCompact } from '../lib/format'
-import { gradeOf, gradeStyle, percentiles, rankPool, Robust, robustness, Tier, TIER_SEQ, TIERS, tierStyle, useRamp, WEAK_BELOW } from '../lib/grades'
+import { monthLabel, num, pct, usdCompact } from '../lib/format'
+import { activityPercentiles, gradeOf, gradeStyle, percentiles, rankPool, Tier, TIER_SEQ, TIERS, tierStyle, useRamp, WEAK_BELOW } from '../lib/grades'
 import MapView, { MapPoint } from '../components/MapView'
 import { Segmented, SortHead } from '../components/bits'
-import MarketNow from '../components/MarketNow'
 
 type Factor = 'yield' | 'growth1' | 'growth5' | 'price' | 'activity' | 'crime'
 type Weights = Record<Factor, number>
@@ -16,7 +15,7 @@ const FACTORS: { id: Factor; label: string; short: string; hint: string }[] = [
   { id: 'growth1', label: 'Growth, 1 yr', short: '1-yr growth', hint: 'Change in the median sale price over a year' },
   { id: 'growth5', label: 'Growth, 5 yr', short: '5-yr growth', hint: 'Change in the median sale price over five years' },
   { id: 'price', label: 'Lower price', short: 'Price', hint: 'A lower median sale price scores higher' },
-  { id: 'activity', label: 'Active market', short: 'Sold', hint: 'More homes sold in 12 months, so easier to buy and resell' },
+  { id: 'activity', label: 'Active market', short: 'Sold', hint: 'Mostly recorded sales in the last 12 months; homes for sale now and newly listed add a minor part' },
   { id: 'crime', label: 'Fewer incidents', short: 'Incidents', hint: 'Police-reported violent and property incidents per 1,000 residents; fewer scores higher' },
 ]
 const PRESETS: { id: string; label: string; w: Weights }[] = [
@@ -51,14 +50,21 @@ function value(a: Area, f: Factor): string | null {
     case 'growth5': return pct(g5(a), 0)
     case 'price': return usdCompact(a.median12)
     case 'activity': return num(a.sales12)
-    case 'crime': return `${a.violentRate!.toFixed(1)} / ${a.propertyRate!.toFixed(0)}`
+    case 'crime': return `${a.violentRate!.toFixed(1)} violent · ${a.propertyRate!.toFixed(1)} property`
   }
 }
-const UNIT: Partial<Record<Factor, string>> = { activity: 'homes sold in 12 months', crime: 'violent / property incidents per 1,000 residents' }
+const UNIT: Partial<Record<Factor, string>> = { activity: 'Sold: recorded sales in the last 12 months. For sale: current listings, a minor part of this factor', crime: 'Police-reported incidents per 1,000 residents per year' }
+const YIELD_NOTE = 'Gross yield ignores taxes, insurance, repairs and vacancy, which run highest in the lowest-priced areas.'
 
 interface Scored { area: Area; score: number; pctl: Partial<Record<Factor, number>>; missing: Factor[]; rank: number; tier: Tier; demoted: boolean }
 const IDS = FACTORS.map((f) => f.id)
-const HOW = 'Each area is ranked within the city on each factor (0–100). The score is a weighted geometric average of those ranks, so a weak result on something you weight heavily pulls the score down more than a simple average would. A slider says how much you care about going from the city\'s worst to its best on that factor. "Must" hides areas in the bottom 40% on that factor. Missing data counts as the city median and keeps an area out of S. An area weak (D or E) on a factor weighted 4 or 5 cannot be S.'
+const HOW = [
+  'Each area is compared with the rest of the city on each factor.',
+  'Sliders set how much each factor counts. 0 ignores it.',
+  'A low result on something you care about a lot pulls the score down hard.',
+  '"Must" hides areas near the bottom of the city on that factor.',
+  'Letters run from S (best match) to E.',
+]
 
 /** Optional URL seeds for screenshots and sharing: ?w=5,1,1,1,2,5 (factor order) and ?must=crime,yield */
 function seed(): { w: Weights | null; must: Factor[] } {
@@ -89,7 +95,9 @@ export default function ScreenerPage({ city, theme }: { city: City; theme: Theme
   const pool = useMemo(() => {
     const max = parseFloat(budget) || Infinity
     const list = (data?.areas ?? []).filter((a) => a.median12 != null && a.median12 <= max && a.sales12 >= minSales)
-    const pc = FACTORS.map((f) => percentiles(list, (a) => a.key, (a) => raw(a, f.id)))
+    const pc = FACTORS.map((f) => f.id === 'activity'
+      ? activityPercentiles(list, (a) => a.key, (a) => a.sales12, [(a) => a.listings?.active ?? null, (a) => a.listings?.newListings ?? null])
+      : percentiles(list, (a) => a.key, (a) => raw(a, f.id)))
     return list.map((a) => ({ area: a, key: a.key, pctl: Object.fromEntries(IDS.flatMap((id, i) => (pc[i].has(a.key) ? [[id, pc[i].get(a.key)]] : []))) as Partial<Record<Factor, number>> }))
   }, [data, budget, minSales])
 
@@ -101,14 +109,6 @@ export default function ScreenerPage({ city, theme }: { city: City; theme: Theme
       hidden: r.hidden.map((h) => ({ area: byKey.get(h.key)!.area, reasons: h.reasons })),
     }
   }, [pool, w, must])
-
-  // robustness readout: 200 re-rankings with nudged weights, computed a moment after the inputs settle
-  const [robust, setRobust] = useState<{ for: unknown; map: Map<string, Robust> } | null>(null)
-  useEffect(() => {
-    const id = window.setTimeout(() => setRobust({ for: scored, map: robustness(pool, IDS, w, must) }), 250)
-    return () => window.clearTimeout(id)
-  }, [pool, w, must, scored])
-  const rb = robust?.for === scored ? robust.map : null
 
   const points: MapPoint[] = useMemo(() => scored.filter((s) => s.area.lat != null).map((s) => ({
     id: s.area.key, lat: s.area.lat as number, lon: s.area.lon as number, radius: s.tier === 'S' ? 11 : s.tier === 'A' ? 9 : 7,
@@ -135,8 +135,6 @@ export default function ScreenerPage({ city, theme }: { city: City; theme: Theme
   const toggleMust = (f: Factor) => setMust((m) => (m.includes(f) ? m.filter((x) => x !== f) : [...m, f]))
   const short = (f: Factor) => FACTORS.find((x) => x.id === f)!.short.toLowerCase()
   const hiddenTip = hidden.slice(0, 40).map((h) => `${h.area.name}: ${h.reasons.map((f) => (h.area && raw(h.area, f) == null ? `no ${short(f)} data` : `${short(f)} ${gradeOf(pool.find((r) => r.key === h.area.key)?.pctl[f])}`)).join(', ')}`).join('\n') + (hidden.length > 40 ? `\n…and ${hidden.length - 40} more` : '')
-  const rangeOf = (s: Scored) => { const q = rb?.get(s.area.key); return q ? (q.lo === q.hi ? `${q.lo}` : `${q.lo}–${q.hi}`) : '' }
-  const steady = (s: Scored) => { const q = rb?.get(s.area.key); return q ? q.hi - q.lo <= Math.max(3, Math.round(s.rank * 0.5)) : true }
   const sel = scored.find((s) => s.area.key === picked) ?? scored[0]
   const onSort = (key: string) => setSort((s) => ({ key, dir: s.key === key ? (s.dir === 1 ? -1 : 1) : 1 }))
 
@@ -163,7 +161,7 @@ export default function ScreenerPage({ city, theme }: { city: City; theme: Theme
         <div className="weights f-weights">
           {FACTORS.map((f) => (
             <div className="weight" key={f.id}>
-              <label className="weight-top" htmlFor={`w-${f.id}`} title={f.hint}><b>{f.label}</b><span>{w[f.id] === 0 ? 'ignored' : `weight ${w[f.id]}`}</span></label>
+              <label className="weight-top" htmlFor={`w-${f.id}`} title={f.hint}><b><span className="f-lg">{f.label}</span><span className="f-sm">{f.short}</span></b><span>{w[f.id] === 0 ? 'ignored' : `weight ${w[f.id]}`}</span></label>
               <div className="f-slide">
                 <input id={`w-${f.id}`} type="range" min={0} max={5} step={1} value={w[f.id]} onChange={(e) => { const nw = { ...w, [f.id]: +e.target.value }; setW(nw); setPreset(presetFor(nw)) }} />
                 <button className={`f-must ${must.includes(f.id) ? 'on' : ''}`} aria-pressed={must.includes(f.id)} onClick={() => toggleMust(f.id)}
@@ -173,8 +171,7 @@ export default function ScreenerPage({ city, theme }: { city: City; theme: Theme
           ))}
         </div>
         <p className="f-how">
-          <span>Score = weighted geometric average of city ranks.</span>
-          <details><summary>How scoring works</summary><span className="f-how-body">{HOW}</span></details>
+          <details><summary>How scoring works</summary><span className="f-how-body">{HOW.map((l) => <span key={l}>{l}</span>)}</span></details>
           {hidden.length > 0 && <span className="f-hidden" title={hiddenTip}>{hidden.length} hidden by must-haves</span>}
         </p>
       </section>
@@ -208,7 +205,7 @@ export default function ScreenerPage({ city, theme }: { city: City; theme: Theme
 
       <div className="f-split">
         <section className="card">
-          <MapView center={city.center} zoom={city.zoom} points={points} theme={theme} selected={sel?.area.key ?? null} onSelect={(id) => setPicked(String(id))} height={380} />
+          <MapView center={city.center} zoom={city.zoom} points={points} theme={theme} selected={sel?.area.key ?? null} onSelect={(id) => setPicked(String(id))} height={window.innerWidth < 600 ? 280 : 380} />
           <div className="map-legend">
             {TIERS.map((t) => <span key={t}><i className="key-box" style={{ background: ramp[TIER_SEQ[t]].bg }} />{t} tier</span>)}
           </div>
@@ -231,32 +228,32 @@ export default function ScreenerPage({ city, theme }: { city: City; theme: Theme
               const known = active.filter((f) => sel.pctl[f.id] != null)
               const strong = [...known].sort((a, b) => (sel.pctl[b.id] as number) - (sel.pctl[a.id] as number)).slice(0, 2)
               const weak = [...known].sort((a, b) => (sel.pctl[a.id] as number) - (sel.pctl[b.id] as number))[0]
-              const q = rb?.get(sel.area.key)
               return (
                 <div className="f-why">
                   {strong.length > 0 && <span>Strongest: {strong.map((f) => `${f.short} ${gradeOf(sel.pctl[f.id])}`).join(', ')}</span>}
                   {weak && !strong.includes(weak) && <span>Held back by: {weak.short} {gradeOf(sel.pctl[weak.id])}</span>}
                   {sel.demoted && <span className="f-warn">Held out of S: weak on a heavily weighted factor</span>}
                   {sel.missing.length > 0 && <span className="f-warn">Incomplete: no {sel.missing.map(short).join(', ')} data, counted at the city median</span>}
-                  <span className="muted" title="Rank across 200 small changes to your weights">{q ? `Top 10 in ${Math.round(q.top10 * 100)}% of nearby weightings · rank ${rangeOf(sel)}` : 'Checking nearby weightings…'}</span>
                 </div>
               )
             })()}
             <div className="f-facts">
               {FACTORS.map((f) => {
                 const on = w[f.id] > 0
-                const v = value(sel.area, f.id)
+                const v = f.id === 'activity' && sel.area.listings?.active != null ? `${num(sel.area.sales12)} sold · ${num(sel.area.listings.active)} for sale` : value(sel.area, f.id)
                 return (
                   <div className={`f-fact ${on ? '' : 'off'}`} key={f.id} title={f.hint}>
                     <span className="f-fact-label">{f.label}{!on && <em> not weighted</em>}</span>
                     <span className="f-fact-val" title={UNIT[f.id]}>{v ?? <span className="muted">no data</span>}</span>
                     {v == null ? <span /> : gradeBox(sel, f.id)}
+                    {v != null && f.id === 'crime' && <span className="f-fact-note">per 1,000 residents</span>}
+                    {v != null && f.id === 'yield' && <span className="f-fact-note">Before taxes, insurance, repairs and vacancy</span>}
                   </div>
                 )
               })}
             </div>
-            <MarketNow l={sel.area.listings} area />
-            <a className="ghost small f-more" href={`#/${city.id}/areas`}>Open in Areas</a>
+            {sel.area.listings && <ListingLine l={sel.area.listings} />}
+            <a className="ghost small f-more" href={`#/${city.id}/areas?area=${encodeURIComponent(sel.area.key)}`}>Detailed View</a>
           </> : <p className="muted">No area selected.</p>}
         </section>
       </div>
@@ -270,8 +267,7 @@ export default function ScreenerPage({ city, theme }: { city: City; theme: Theme
                 <SortHead id="rank" label="#" sort={sort} onSort={onSort} />
                 <SortHead id="name" label={city.areaNoun} sort={sort} onSort={onSort} />
                 <SortHead id="score" label="Tier · score" sort={sort} onSort={onSort} />
-                <th className="f-range-h" title="Rank across 200 small changes to your weights (5th–95th percentile)">Range</th>
-                {active.map((f) => <SortHead key={f.id} id={f.id} label={f.short} sort={sort} onSort={onSort} num />)}
+                {active.map((f) => <SortHead key={f.id} id={f.id} label={f.id === 'crime' ? 'Incidents per 1,000' : f.id === 'yield' ? 'Gross yield' : f.short} sort={sort} onSort={onSort} num />)}
               </tr></thead>
               <tbody>
                 {rows.map((s) => {
@@ -279,14 +275,15 @@ export default function ScreenerPage({ city, theme }: { city: City; theme: Theme
                   return (
                     <tr key={s.area.key} className={`click ${s.area.key === sel?.area.key ? 'sel' : ''}`} onClick={() => setPicked(s.area.key)}>
                       <td className="rank">{s.rank}</td>
-                      <td className="f-name" title={`${s.area.name}${sub ? ` · ${sub}` : ''}`}><b>{s.area.name}</b>{s.missing.length > 0 && <span className="f-inc" title={`Incomplete: no ${s.missing.map(short).join(', ')} data, counted at the city median`}>*</span>}{sub && <span className="muted"> {sub}</span>}</td>
+                      <td className="f-name" title={`${s.area.name}${sub ? ` · ${sub}` : ''}`}><b>{s.area.name}</b>{s.missing.length > 0 && <span className="f-inc" title={`Incomplete: no ${s.missing.map(short).join(', ')} data, counted at the city median`}>*</span>}{sub && <span className="muted f-name-sub"> {sub}</span>}</td>
                       <td><span className="f-ts">{tierBadge(s.tier)}<b>{s.score}</b><span className="mini"><i style={{ width: `${s.score}%` }} /></span></span></td>
-                      <td className={`f-range ${steady(s) ? '' : 'shifts'}`} title="Rank across 200 small changes to your weights">{rangeOf(s)}</td>
                       {active.map((f) => {
                         const v = value(s.area, f.id)
                         return (
                           <td key={f.id} className="num" title={UNIT[f.id]}>
-                            {v == null ? <span className="f-nodata">no data</span> : <span className="f-cell">{v}{gradeBox(s, f.id)}</span>}
+                            {v == null ? <span className="f-nodata">no data</span> : <span className="f-cell">{f.id === 'crime'
+                              ? <span className="f-crime"><span>{s.area.violentRate!.toFixed(1)} violent</span><span>{s.area.propertyRate!.toFixed(1)} property</span></span>
+                              : v}{gradeBox(s, f.id)}</span>}
                           </td>
                         )
                       })}
@@ -299,10 +296,18 @@ export default function ScreenerPage({ city, theme }: { city: City; theme: Theme
         )}
       </section>
 
-      <p className="footnote">
-        A screen for research, not advice. Scores use only sale prices, rents, sales counts and police-reported incidents, nothing about who lives in an area.<br />
-        Gross yield ignores taxes, insurance, repairs and vacancy, which run highest in the lowest-priced areas.
-      </p>
+      {active.some((f) => f.id === 'yield') && scored.length > 0 && <p className="footnote">{YIELD_NOTE}</p>}
     </div>
   )
+}
+
+/** Current listing figures, kept to one plain line: they are not scored apart from a minor part of "Active market". */
+function ListingLine({ l }: { l: Listings }) {
+  const parts = [
+    l.active != null && `${num(l.active)} for sale`,
+    l.newListings != null && `${num(l.newListings)} newly listed`,
+    l.priceCutShare != null && `${l.priceCutShare.toFixed(0)}% with a price cut`,
+  ].filter(Boolean)
+  if (!parts.length) return null
+  return <p className="f-listings" title="Current listings from Zillow Research, by ZIP code. Not recorded sales.">Listings, {monthLabel(l.month)}: {parts.join(' · ')}</p>
 }

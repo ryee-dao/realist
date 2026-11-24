@@ -15,7 +15,7 @@ import shutil
 import sys
 import time
 
-from . import analytics, context
+from . import analytics, context, intake, listing_cards
 from .cities import CITIES
 from .http import Client
 from .sources import Context
@@ -29,7 +29,7 @@ def log(msg):
     print(msg, flush=True)
 
 
-def harvest(store, cities, full, today, client):
+def harvest(store, cities, full, today, client, run_id=None):
     state = store.read_state()
     out, rent_cache = {}, {}
     for city in cities:
@@ -48,6 +48,7 @@ def harvest(store, cities, full, today, client):
         except Exception as e:   # one city failing must not lose the others' work
             error = f"{type(e).__name__}: {e}"
             log(f"  FAILED: {error}")
+        intake.remember(store, city, ctx.intake, run_id)
         context_errors = context.harvest(ctx, city, rent_cache)
         out[city] = {"mode": "full" if is_full else "incremental", "since": since, "sources": ctx.reports,
                      "seconds": round(time.time() - t0, 1), "error": error, "context_errors": context_errors}
@@ -111,7 +112,8 @@ def main(argv=None):
         if args.rebuild:
             for city in args.city or list(CITIES):
                 shutil.rmtree(os.path.join(args.store, city), ignore_errors=True)
-        harvested, state = harvest(store, args.city or list(CITIES), args.full or args.rebuild, today, client)
+        harvested, state = harvest(store, args.city or list(CITIES), args.full or args.rebuild, today, client,
+                                   started.strftime("%Y%m%dT%H%M%SZ"))
 
     facts = {}
     for city in CITIES:
@@ -119,6 +121,8 @@ def main(argv=None):
         f = analytics.build_city(store, city, args.out)
         if f:
             facts[city] = f
+        intake.publish(store, city, args.out)
+        listing_cards.refresh(args.out, [city], args.store, log=log)   # New listings page; skipped without listings.json
 
     runs = store.read_runs()
     ok = True

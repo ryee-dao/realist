@@ -5,7 +5,11 @@ from .sources import chicago, nyc, philadelphia
 CITIES = {
     "philadelphia": {
         "name": "Philadelphia", "state": "PA", "center": [39.99, -75.13], "zoom": 11,
-        "area_noun": "Neighborhood", "area_by": "area", "area_names": {},
+        "area_noun": "Neighborhood", "area_by": "area",
+        # area_names: display-name overrides. With area_by "area" they map the boundary file's name to the label
+        # shown on the site; the area key (and so every id and link) keeps the boundary name.
+        # The boundary file calls Port Richmond just "Richmond".
+        "area_names": {"Richmond": "Port Richmond"},
         # the sales files carry no neighbourhood, so each sale is placed by its coordinates in the city's boundaries
         "boundaries": {"url": "https://raw.githubusercontent.com/opendataphilly/open-geo-data/master/philadelphia-neighborhoods/philadelphia-neighborhoods.geojson",
                        "name": "MAPNAME"},

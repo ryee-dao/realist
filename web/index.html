@@ -11,17 +11,19 @@
     <meta name="theme-color" content="#121416" />
     <title>Realist | Home sale analytics from public records</title>
     <script>
-      /* Theme before first paint: ?theme=light|dark (for sharing and screenshots), else the saved choice, else the OS, else dark. */
+      /* Theme before first paint: ?theme=light|dark (for sharing and screenshots), else the saved choice, else dark. */
       (function (d) {
         var t = 'dark', ok = function (v) { return v === 'light' || v === 'dark' }
         try {
           var q = new URLSearchParams(location.search).get('theme'), s = localStorage.getItem('realist-theme')
-          t = ok(q) ? q : ok(s) ? s : matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark'
+          t = ok(q) ? q : ok(s) ? s : 'dark'
         } catch (e) {}
         d.dataset.theme = t
         if (t === 'light') document.querySelector('meta[name="theme-color"]').setAttribute('content', '#eef2ef')
       })(document.documentElement)
     </script>
+    <!-- page colour before the stylesheet and React load, so there is no flash -->
+    <style>html { background: #121416; color-scheme: dark; } html[data-theme="light"] { background: #eef2ef; color-scheme: light; }</style>
   </head>
   <body>
     <div id="root"></div>

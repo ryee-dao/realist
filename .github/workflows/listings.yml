@@ -1,0 +1,50 @@
+name: Harvest live listings
+
+# Four light runs a day. Each run reads one publisher per city (the one tried longest ago), so every publisher
+# is read about once a day per city it covers. Times are 07:23, 11:23, 15:23 and 19:23 US Eastern (EST).
+on:
+  schedule:
+    - cron: "23 0,12,16,20 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: live-listings-harvest
+  cancel-in-progress: false
+
+jobs:
+  harvest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/cache/restore@v4
+        with:
+          path: harvested-listings
+          key: listings-v1-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: listings-v1-
+      # The cache carries the snapshots and each city's harvest-state.json (rotation and cool-downs) between runs.
+      # The command also rebuilds <city>/listing-cards.json; with no area data here those cards are bare, and the
+      # Data pipeline workflow rebuilds them with the area figures and price model before it deploys the site.
+      - id: listings
+        name: Refresh listings and galleries
+        continue-on-error: true
+        run: python -m engine.live_listings --output harvested-listings
+      - uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: harvested-listings
+          key: listings-v1-${{ github.run_id }}-${{ github.run_attempt }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: live-listings
+          path: harvested-listings/
+          retention-days: 2
+          if-no-files-found: error
+      - if: steps.listings.outcome == 'failure'
+        run: exit 1

@@ -2,12 +2,10 @@ import '../styles/pipeline.css'
 import { useEffect, useId, useState } from 'react'
 import { Check, City, Index, Run, Status } from '../lib/data'
 import { compact, dateLabel, dateTime, monthLabel, num, timeAgo } from '../lib/format'
-import { fetchJob, JobStatus } from '../lib/live'
 import LiveTerminal, { Meter } from '../components/LiveFeed'
-import { cityFunnel, cityStages, hms, secondsToNextRun, sourceState } from '../lib/pipeline'
+import { cityStages, hms, secondsToNextRun, sourceState } from '../lib/pipeline'
 import ChartCard from '../charts/ChartCard'
 import { Segmented } from '../components/bits'
-import { site } from '../site'
 import { useWidth } from '../lib/hooks'
 import { niceTicks } from '../charts/scale'
 
@@ -43,22 +41,13 @@ function useCityParam(index: Index): [string, (id: string) => void] {
 
 export default function Pipeline({ index, status }: { index: Index; status: Status }) {
   const run = status.last
-  const [job, setJob] = useState<JobStatus | null>(null)
   const [cityId, setCityId] = useCityParam(index)
-  useEffect(() => {
-    let live = true
-    const tick = () => fetchJob(site.repoUrl).then((j) => live && setJob(j))
-    tick()
-    const id = setInterval(tick, 30000)
-    return () => { live = false; clearInterval(id) }
-  }, [])
   if (!run) return <div className="notice">The pipeline has not completed a run yet.</div>
 
   const city = index.cities.find((c) => c.id === cityId) ?? null
   const checks = city ? run.checks.filter((c) => c.city === city.id) : run.checks
   const warned = checks.filter((c) => c.status === 'warn').length
   const failed = checks.filter((c) => c.status === 'fail').length
-  const running = job?.state === 'running' || job?.state === 'queued'
 
   return (
     <div className="pipe">
@@ -71,9 +60,7 @@ export default function Pipeline({ index, status }: { index: Index; status: Stat
           <Segmented label="City" value={cityId} onChange={setCityId}
             options={[{ id: 'all', label: 'All cities' }, ...index.cities.map((c) => ({ id: c.id, label: c.name }))]} />
           <div className="pipe-chips">
-            <a className={`chip ${running ? 'live' : ''}`} href={job?.url ?? `${site.repoUrl}/actions`} target="_blank" rel="noreferrer">
-              <i className={`pulse ${running ? 'on' : ''}`} />{running ? 'Daily job running now' : `Last run ${timeAgo(run.finished)} · ${duration(run.duration_s)}`}
-            </a>
+            <span className="chip" title={dateTime(run.finished)}>Last run {timeAgo(run.finished)} · {duration(run.duration_s)}</span>
             <span className={`chip ${failed ? 'fail' : warned ? 'warn' : 'pass'}`}>
               {failed ? `✕ ${failed} failed` : warned ? `! ${warned} warning${warned > 1 ? 's' : ''}` : `✓ ${checks.length}/${checks.length} checks passed`}
             </span>
@@ -83,8 +70,8 @@ export default function Pipeline({ index, status }: { index: Index; status: Stat
 
       <div className="control">
         {city
-          ? <LiveTerminal key={city.id} index={index} city={city.id} />
-          : <LiveTerminal key="all" index={index} city={index.cities[0].id} note={`${index.cities[0].name} only · pick a city`} />}
+          ? <LiveTerminal key={city.id} index={index} city={city.id} lag={[city]} checked={run.finished} />
+          : <LiveTerminal key="all" index={index} city={index.cities[0].id} note={`${index.cities[0].name} records · pick a city`} lag={index.cities} checked={run.finished} />}
         <ControlSide index={index} run={run} city={city} />
       </div>
 
@@ -101,15 +88,13 @@ export default function Pipeline({ index, status }: { index: Index; status: Stat
 
       <SaleMonthsCard index={index} city={city} />
 
-        <section className="card">
-          <header className="card-head"><div><h3>Verify it yourself</h3></div></header>
+      <section className="card">
+          <header className="card-head"><div><h3>Public records</h3><p>The datasets behind every number</p></div></header>
           <div className="verify">
-            <a href={`${site.repoUrl}/actions`} target="_blank" rel="noreferrer"><b>Run logs</b><span>GitHub Actions · all cities</span></a>
-            <a href={`${site.repoUrl}/tree/data`} target="_blank" rel="noreferrer"><b>The data</b><span>CSV per city per month</span></a>
-            <a href={`${site.repoUrl}/tree/main/engine`} target="_blank" rel="noreferrer"><b>The rules</b><span>Engine source code</span></a>
-            {city
-              ? city.sources.map((s) => <a key={s.url} href={s.url} target="_blank" rel="noreferrer"><b>{s.name}</b><span>{s.publisher}</span></a>)
-              : index.cities.map((c) => <a key={c.id} href={c.sources[0].url} target="_blank" rel="noreferrer"><b>{c.name} records</b><span>{c.sources[0].publisher}</span></a>)}
+            {(city ? [city] : index.cities).flatMap((c) => [
+              ...c.sources.map((s) => <a key={c.id + s.url} href={s.url} target="_blank" rel="noreferrer"><b>{city ? s.name : `${c.name} · ${s.name}`}</b><span>{s.publisher}</span></a>),
+              <a key={c.id + 'crime'} href={c.crimeLink} target="_blank" rel="noreferrer"><b>{city ? 'Reported crime incidents' : `${c.name} · reported crime incidents`}</b><span>{c.crimeSource}</span></a>,
+            ])}
           </div>
           <p className="footnote pipe-range">{city
             ? `${city.name} sales stored ${dateLabel(city.firstSale)} to ${dateLabel(city.latestSale)}`
@@ -119,41 +104,12 @@ export default function Pipeline({ index, status }: { index: Index; status: Stat
   )
 }
 
-/* Beside the terminal: the last run top to bottom for the chosen scope, the global countdown, a light per source. */
+/* Beside the terminal: the countdown to the next run and a light per source. */
 function ControlSide({ index, run, city }: { index: Index; run: Run; city: City | null }) {
   const clock = useCountdown()
-  let stages
-  if (city) {
-    const s = cityStages(run, city.id)
-    stages = [
-      { k: 'Fetch', v: num(s.requests), s: 'requests' },
-      { k: 'Read', v: compact(s.read), s: s.asOf ? `sale records · pull of ${day(s.asOf)}` : 'sale records' },
-      { k: 'Validate', v: compact(s.kept), s: `kept · ${compact(s.read - s.kept)} rejected` },
-      { k: 'Store', v: compact(city.rows), s: 'sales held' },
-      { k: 'Gate', v: `${s.passed}/${s.checks.length}`, s: s.passed === s.checks.length ? 'passed · published' : 'needs a look' },
-    ]
-  } else {
-    const per = index.cities.map((c) => cityFunnel(run, c.id))
-    const read = per.reduce((t, p) => t + p.read, 0)
-    const kept = per.reduce((t, p) => t + p.kept, 0)
-    const passed = run.checks.filter((c) => c.status === 'pass').length
-    stages = [
-      { k: 'Fetch', v: num(run.http.requests), s: `requests · ${run.http.retries} retried` },
-      { k: 'Read', v: compact(read), s: 'sale records' },
-      { k: 'Validate', v: compact(kept), s: `kept · ${compact(read - kept)} rejected` },
-      { k: 'Store', v: compact(index.cities.reduce((n, c) => n + c.rows, 0)), s: 'sales held' },
-      { k: 'Gate', v: `${passed}/${run.checks.length}`, s: run.ok ? 'passed · published' : 'blocked' },
-    ]
-  }
   const rows = city ? [city] : index.cities
   return (
     <div className="control-side">
-      <section className="card">
-        <header className="card-head"><div><h3>Last run</h3><p>{city ? city.name : 'All cities'} · {dateTime(run.finished)}</p></div></header>
-        <ol className="vflow">
-          {stages.map((st) => <li className="vnode" key={st.k}><small>{st.k}</small><b>{st.v}</b><span>{st.s}</span></li>)}
-        </ol>
-      </section>
       <section className="card">
         <header className="card-head"><div><h3>Next run in</h3></div><span className="pipe-tag">All cities</span></header>
         <div className="clock" role="timer" aria-label={`Next daily run in ${clock}`}>{clock}</div>
@@ -215,20 +171,21 @@ function Meters({ city }: { city: City }) {
 function CityPanel({ city, run }: { city: City; run: Run }) {
   const s = cityStages(run, city.id)
   const share = s.read ? s.kept / s.read : 0
+  const ok = s.passed === s.checks.length
   return (
     <section className="card city-panel">
-      <header className="card-head"><div><h3>{city.name} · kept and thrown out</h3></div><Freshness asOf={s.asOf} /></header>
+      <header className="card-head"><div><h3>{city.name} · kept and thrown out</h3><p>{dateTime(run.finished)} · {ok ? `${s.passed}/${s.checks.length} checks passed` : `${s.passed}/${s.checks.length} checks passed, needs a look`}</p></div><Freshness asOf={s.asOf} /></header>
       <div className="city-panel-grid">
         <div className="city-panel-left">
           <div className="ring-row">
             <Ring share={share} size="big" />
-            <dl className="kv">
-              <dt>Read</dt><dd>{num(s.read)}</dd>
-              <dt>Kept</dt><dd>{num(s.kept)}</dd>
-              <dt>Rejected</dt><dd>{num(s.read - s.kept)}</dd>
-              <dt>Stored</dt><dd>{num(city.rows)}</dd>
-              <dt>Latest sale</dt><dd>{dateLabel(city.latestSale)}</dd>
-              <dt>Checks</dt><dd className="pipe-lights">{s.checks.map((k) => <i key={k.name} className={`light ${k.status}`} title={`${k.name}: ${k.detail}`} />)}</dd>
+            <dl className="stats">
+              <div><dt>Read</dt><dd>{num(s.read)}</dd></div>
+              <div><dt>Kept</dt><dd>{num(s.kept)}</dd></div>
+              <div><dt>Rejected</dt><dd>{num(s.read - s.kept)}</dd></div>
+              <div><dt>Stored</dt><dd>{num(city.rows)}</dd></div>
+              <div><dt>Latest sale</dt><dd>{dateLabel(city.latestSale)}</dd></div>
+              <div><dt>Checks</dt><dd className="pipe-lights">{s.checks.map((k) => <i key={k.name} className={`light ${k.status}`} title={`${k.name}: ${k.detail}`} />)}</dd></div>
             </dl>
           </div>
           <div className="tile-label">Coverage · last 12 months</div>
@@ -362,14 +319,14 @@ function AllGate({ index, run }: { index: Index; run: Run }) {
   )
 }
 
-/* Sales held in the store by the month the sale happened. Months after `through` are still filling in at the source. */
+/* Sales held in the store by the month the sale happened. Months after `through` are still being published by the city. */
 function SaleMonthsCard({ index, city }: { index: Index; city: City | null }) {
   const shown = city ? [city] : index.cities
   const top = Math.max(1, ...shown.flatMap((c) => c.byMonth.map((b) => b.count)))
   const months = shown[0]?.byMonth.map((b) => b.month) ?? []
   const filling = (c: City, m: string) => m > c.through
   const table = city
-    ? { head: ['Sale month', 'Sales', 'Status'], rows: [...city.byMonth].reverse().map((b) => [monthLabel(b.month), num(b.count), filling(city, b.month) ? 'Still filling in' : 'Complete']) }
+    ? { head: ['Sale month', 'Sales', 'Status'], rows: [...city.byMonth].reverse().map((b) => [monthLabel(b.month), num(b.count), filling(city, b.month) ? 'City still publishing' : 'Complete']) }
     : { head: ['Sale month', ...index.cities.map((c) => c.name)], rows: [...new Set(index.cities.flatMap((c) => c.byMonth.map((b) => b.month)))].sort().reverse()
         .map((m) => [monthLabel(m), ...index.cities.map((c) => { const b = c.byMonth.find((x) => x.month === m); return b ? `${num(b.count)}${filling(c, m) ? ' *' : ''}` : '–' })]) }
   const latest = city ? city.latestSale : index.cities.map((c) => c.latestSale).sort().reverse()[0]
@@ -377,13 +334,14 @@ function SaleMonthsCard({ index, city }: { index: Index; city: City | null }) {
     <ChartCard title="Sales by sale date" subtitle={`${city ? city.name : 'All cities'} · by month · latest sale ${dateLabel(latest)}`} table={table}>
       <div className="legend sm-legend">
         <span><i className="key-box sm-key" />Complete</span>
-        <span><i className="key-box sm-key filling" />Still filling in</span>
+        <span><i className="key-box sm-key filling" />City still publishing these months</span>
         {!city && <span className="muted">Same scale</span>}
       </div>
       <div className={`sm-grid ${city ? 'one' : ''}`}>
         {shown.map((c) => <SaleMonths key={c.id} city={c} top={top} title={city ? undefined : c.name} height={city ? 220 : 170} />)}
       </div>
       {months.length === 0 && <div className="muted">No sales stored.</div>}
+      <p className="footnote sm-note">Deeds reach the public record weeks to months after a sale, so the newest months are incomplete.{!city && ' * marks those months.'}</p>
     </ChartCard>
   )
 }
@@ -457,7 +415,7 @@ function SaleMonths({ city, top: max, title, height }: { city: City; top: number
           <div className="tooltip" style={flip ? { right: width - tipLeft + 12, top: SM.top } : { left: tipLeft + 12, top: SM.top }}>
             <div className="tooltip-title">{monthLabel(data[hover].month)}</div>
             <div className="tooltip-row"><span>Sales held</span><b>{num(data[hover].count)}</b></div>
-            <div className="tooltip-row"><span>{data[hover].month > city.through ? 'Still filling in' : 'Complete'}</span></div>
+            <div className="tooltip-row"><span>{data[hover].month > city.through ? 'City still publishing' : 'Complete'}</span></div>
           </div>
         )}
       </div>

@@ -1,5 +1,7 @@
+import '../styles/market.css'
 import { useMemo, useState } from 'react'
 import { Areas, City, Overview, useData } from '../lib/data'
+import { AreaSeries, hashParam, setHashParam } from '../lib/areaTrends'
 import { compact, monthLabel, num, pct, usd, usdCompact } from '../lib/format'
 import ChartCard from '../charts/ChartCard'
 import LineChart, { LineSeries } from '../charts/LineChart'
@@ -7,7 +9,6 @@ import ColumnChart from '../charts/ColumnChart'
 import Sparkline from '../charts/Sparkline'
 import { yearTicks } from '../charts/scale'
 import { Delta, Segmented, StatTile, TYPE_COLOR } from '../components/bits'
-import MarketNow from '../components/MarketNow'
 
 type Range = '3y' | '5y' | 'all'
 const RANGE_MONTHS: Record<Range, number> = { '3y': 36, '5y': 60, all: 10000 }
@@ -20,6 +21,9 @@ export default function Market({ city }: { city: City }) {
   const [type, setType] = useState('All homes')
   const [range, setRange] = useState<Range>('5y')
   const [compare, setCompare] = useState(false)
+  const [areaKey, setAreaKey] = useState(hashParam('area'))
+  const { data: series } = useData<AreaSeries>(areaKey ? `${city.id}/area-series.json` : null)
+  const pick = (key: string) => { setAreaKey(key); setHashParam('area', key) }
 
   const movers = useMemo(() => {
     const ranked = (areas?.areas ?? []).filter((a) => a.sales12 >= 40 && a.medianYoY != null)
@@ -27,7 +31,25 @@ export default function Market({ city }: { city: City }) {
     return { up: ranked.slice(0, 5), down: ranked.slice(-5).reverse() }
   }, [areas])
 
+  const area = areas?.areas.find((a) => a.key === areaKey)
+  const picker = areas && (
+    <label className="field market-area"><span>Area</span>
+      <select value={area ? areaKey : ''} onChange={(e) => pick(e.target.value)}>
+        <option value="">All of {city.name}</option>
+        {[...areas.areas].sort((x, y) => x.name.localeCompare(y.name)).map((a) => (
+          <option key={a.key} value={a.key}>{a.name}{a.group && a.group !== a.name ? ` (${a.group})` : ''}</option>
+        ))}
+      </select>
+    </label>
+  )
   if (!data) return <div className="loading">Loading {city.name}…</div>
+  if (area) {
+    if (!series) return <>{picker}<div className="loading">Loading {area.name}…</div></>
+    const s = series.areas[area.key]
+    if (!s) return <>{picker}<p className="muted">No monthly figures for {area.name} yet.</p></>
+    return <AreaView picker={picker} name={area.name} series={series} s={s} range={range === 'all' ? '5y' : range} setRange={setRange} />
+  }
+
   const t = data.types[type] ?? data.types['All homes']
   const start = Math.max(0, data.months.length - RANGE_MONTHS[range])
   const months = data.months.slice(start)
@@ -52,11 +74,12 @@ export default function Market({ city }: { city: City }) {
   const hist = t.hist
   const ri = data.repeatIndex
   const riLabels = ri ? ri.years.map((m) => `12 months to ${monthLabel(m)}`) : []
-  const histLabels = hist.counts.map((_, i) => i === hist.counts.length - 1 ? `${usdCompact(hist.edges[i])} and up` : `${usdCompact(hist.edges[i])} – ${usdCompact(hist.edges[i + 1])}`)
+  const histLabels = bandLabels(hist.edges, hist.counts.length)
 
   return (
     <>
-      <div className="filters" style={{ marginBottom: 0 }}>
+      <div className="filters market-filters">
+        {picker}
         <Segmented label="Home type" value={type} onChange={(v) => { setType(v); setCompare(false) }}
           options={data.typeOrder.map((n) => ({ id: n, label: n }))} />
         <Segmented label="Time range" value={range} onChange={setRange}
@@ -66,7 +89,7 @@ export default function Market({ city }: { city: City }) {
         )}
       </div>
 
-      <div className="tiles">
+      <div className="tiles market-tiles">
         <StatTile hero label={`Median sale price · ${type.toLowerCase()}`} value={usd(k.median)}>
           <Delta value={k.medianYoY} suffix="vs a year earlier" />
           <span className="muted"> · 3 months to {monthLabel(data.through)}</span>
@@ -82,7 +105,18 @@ export default function Market({ city }: { city: City }) {
         </StatTile>
       </div>
 
-      <MarketNow l={data.listings} wide />
+      {data.listings && (() => {
+        const l = data.listings
+        const foot = `Listings, ${monthLabel(l.month)}, vs a year earlier`
+        return (
+          <div className="tiles market-tiles">
+            <StatTile label="Homes for sale" value={num(l.active)}><Delta value={l.activeYoY} short /> <span className="muted">{foot}</span></StatTile>
+            <StatTile label="Newly listed" value={num(l.newListings)}><Delta value={l.newListingsYoY} short /> <span className="muted">{foot}</span></StatTile>
+            <StatTile label="Median asking price" value={usdCompact(l.listPrice)}><Delta value={l.listPriceYoY} short /> <span className="muted">Asking, not sale prices</span></StatTile>
+            <StatTile label="Listings with a price cut" value={l.priceCutShare == null ? '–' : `${l.priceCutShare.toFixed(0)}%`}><Delta value={l.priceCutShareYoY} points short /> <span className="muted">{foot}</span></StatTile>
+          </div>
+        )
+      })()}
 
       <div className="grid-2">
         <ChartCard className="span-2" title={compare ? 'Median sale price by home type' : 'Median sale price'}
@@ -96,11 +130,7 @@ export default function Market({ city }: { city: City }) {
           <ColumnChart labels={labels} values={cut(t.series.count)} ticks={ticks} format={compact} unit="Homes sold" color={TYPE_COLOR[type]} />
         </ChartCard>
 
-        <ChartCard title="Sale prices, last 12 months" subtitle={`How many ${type.toLowerCase()} sold in each price band`}
-          table={{ head: ['Price band', 'Homes sold'], rows: histLabels.map((l, i) => [l, num(hist.counts[i])]) }}>
-          <ColumnChart labels={histLabels} values={hist.counts} tickAlign="edge" format={compact} unit="Homes sold" color={TYPE_COLOR[type]}
-            ticks={(w) => hist.edges.map((e, index) => ({ index, label: usdCompact(e) })).filter((_, i) => i % (w < 420 ? 5 : 3) === 0)} />
-        </ChartCard>
+        <HistCard edges={hist.edges} counts={hist.counts} labels={histLabels} what={type.toLowerCase()} color={TYPE_COLOR[type]} />
 
         {hasPpsf && (
           <ChartCard className="span-2" title="Price per square foot" subtitle="Monthly median, for homes whose floor area is on record"
@@ -121,8 +151,8 @@ export default function Market({ city }: { city: City }) {
 
         {areas && movers.up.length > 0 && (
           <>
-            <MoverCard title="Prices rising fastest" city={city} rows={movers.up} noun={city.areaNoun} />
-            <MoverCard title="Prices falling or flattest" city={city} rows={movers.down} noun={city.areaNoun} />
+            <MoverCard title="Prices rising fastest" city={city} rows={movers.up} noun={city.areaNoun} onPick={pick} />
+            <MoverCard title="Prices falling or flattest" city={city} rows={movers.down} noun={city.areaNoun} onPick={pick} />
           </>
         )}
       </div>
@@ -131,19 +161,105 @@ export default function Market({ city }: { city: City }) {
   )
 }
 
-function MoverCard({ title, rows, city, noun }: { title: string; rows: Areas['areas']; city: City; noun: string }) {
+const bandLabels = (edges: number[], n: number) =>
+  Array.from({ length: n }, (_, i) => i === n - 1 ? `${usdCompact(edges[i])} and up` : `${usdCompact(edges[i])} – ${usdCompact(edges[i + 1])}`)
+
+function HistCard({ edges, counts, labels, what, color }: { edges: number[]; counts: number[]; labels: string[]; what: string; color: string }) {
+  return (
+    <ChartCard title="Sale prices, last 12 months" subtitle={`How many ${what} sold in each price band`}
+      table={{ head: ['Price band', 'Homes sold'], rows: labels.map((l, i) => [l, num(counts[i])]) }}>
+      <ColumnChart labels={labels} values={counts} tickAlign="edge" format={compact} unit="Homes sold" color={color}
+        ticks={(w) => edges.map((e, index) => ({ index, label: usdCompact(e) })).filter((_, i) => i % (w < 420 ? 5 : 3) === 0)} />
+    </ChartCard>
+  )
+}
+
+/** One area: recorded sales only. Listing figures are published by ZIP code, so they are left out here. */
+function AreaView({ picker, name, series, s, range, setRange }: {
+  picker: React.ReactNode; name: string; series: AreaSeries; s: AreaSeries['areas'][string]; range: Range; setRange: (r: Range) => void
+}) {
+  const start = Math.max(0, series.months.length - RANGE_MONTHS[range])
+  const months = series.months.slice(start)
+  const labels = months.map(monthLabel)
+  const ticks = (w: number) => yearTicks(months, w)
+  const k = s.kpi
+  const color = TYPE_COLOR['All homes']
+  const edges = Array.from({ length: s.hist.counts.length + 1 }, (_, i) => i * s.hist.step)
+  const median = s.median.slice(start)
+  const ppsf = s.ppsf.slice(start)
+  const count = s.count.slice(start)
+  return (
+    <>
+      <div className="filters market-filters">
+        {picker}
+        <Segmented label="Time range" value={range} onChange={setRange}
+          options={[{ id: '3y', label: '3 years' }, { id: '5y', label: '5 years' }]} />
+        <span className="muted market-note">All home types · recorded sales only</span>
+      </div>
+
+      {k.thin && (
+        <div className="notice market-thin">
+          Too few sales: only {num(k.sales12)} in {name} in the last 12 months, so prices are not shown.
+        </div>
+      )}
+      <div className="tiles market-tiles">
+        {!k.thin && <>
+          <StatTile hero label={`Median sale price · ${name}`} value={usd(k.median12)}>
+            <Delta value={k.medianYoY} suffix="vs a year earlier" /><span className="muted"> · 12 months to {monthLabel(series.through)}</span>
+          </StatTile>
+          <StatTile label="Price per sq ft" value={k.ppsf12 == null ? 'Not published' : usd(k.ppsf12)}>
+            {k.ppsf12 == null ? <span className="muted">No floor area on record</span> : <Delta value={k.ppsfYoY} suffix="vs a year earlier" />}
+          </StatTile>
+        </>}
+        <StatTile label="Homes sold, 12 months" value={num(k.sales12)}>
+          <Delta value={k.salesYoY} suffix="vs the year before" />
+        </StatTile>
+        {!k.thin && k.p25 != null && (
+          <StatTile label="Middle half of sales" value={`${usdCompact(k.p25)} – ${usdCompact(k.p75)}`}>
+            <span className="muted">Last 12 months</span>
+          </StatTile>
+        )}
+      </div>
+      <p className="muted market-note">Asking-price and listing figures are only published by ZIP code, so they are hidden for a single area. See New listings for homes on the market.</p>
+
+      <div className="grid-2">
+        {!k.thin && (
+          <ChartCard className="span-2" title={`Median sale price, ${name}`}
+            subtitle={`Median over the ${series.rollMonths} months to each month, which smooths out thin months. Gaps: too few sales.`}
+            table={{ head: ['Month', 'Median sale price'], rows: labels.map((l, i) => [l, usd(median[i])]).reverse() }}>
+            <LineChart labels={labels} ticks={ticks} series={[{ name: 'Median sale price', color, values: median }]} format={usd} axisFormat={usdCompact} height={300} />
+          </ChartCard>
+        )}
+        <ChartCard title="Homes sold per month" subtitle={`Recorded sales in ${name}`}
+          table={{ head: ['Month', 'Homes sold'], rows: labels.map((l, i) => [l, num(count[i])]).reverse() }}>
+          <ColumnChart labels={labels} values={count} ticks={ticks} format={compact} unit="Homes sold" color={color} />
+        </ChartCard>
+        {!k.thin && <HistCard edges={edges} counts={s.hist.counts} labels={bandLabels(edges, s.hist.counts.length)} what="homes" color={color} />}
+        {!k.thin && ppsf.some((v) => v != null) && (
+          <ChartCard className="span-2" title="Price per square foot" subtitle={`Median over the ${series.rollMonths} months to each month, for homes whose floor area is on record`}
+            table={{ head: ['Month', 'Price per sq ft'], rows: labels.map((l, i) => [l, usd(ppsf[i])]).reverse() }}>
+            <LineChart labels={labels} ticks={ticks} series={[{ name: 'Median price per sq ft', color, values: ppsf }]} format={usd} height={240} />
+          </ChartCard>
+        )}
+      </div>
+      <p className="footnote">Medians mix every home that sold, so a change can reflect a different mix of homes as well as a change in values.</p>
+    </>
+  )
+}
+
+function MoverCard({ title, rows, city, noun, onPick }: { title: string; rows: Areas['areas']; city: City; noun: string; onPick: (key: string) => void }) {
   return (
     <section className="card">
       <header className="card-head">
         <div><h3>{title}</h3><p>Median price, last 12 months vs the 12 before. Areas with 40+ sales.</p></div>
         <a className="ghost small" href={`#/${city.id}/areas`}>All areas</a>
       </header>
-      <table className="data compact">
+      <table className="data compact movers">
         <thead><tr><th>{noun}</th><th className="num">Median</th><th className="num">1-yr change</th><th>6-year trend</th></tr></thead>
         <tbody>
           {rows.map((a) => (
             <tr key={a.key}>
-              <td><b>{a.name}</b>{a.group && <span className="muted"> {a.group}</span>}</td>
+              <td><button className="link-btn" onClick={() => { onPick(a.key); window.scrollTo(0, 0) }}><b>{a.name}</b></button>{a.group && <span className="muted"> {a.group}</span>}</td>
               <td className="num">{usd(a.median12)}</td>
               <td className="num">{pct(a.medianYoY)}</td>
               <td><Sparkline values={a.quarterly} /></td>

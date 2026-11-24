@@ -15,6 +15,12 @@ from collections import Counter
 
 TODAY = dt.date(2026, 11, 23)
 
+try:   # optional: only the Parquet export needs it
+    import duckdb  # noqa: F401
+    HAS_DUCKDB = True
+except ImportError:
+    HAS_DUCKDB = False
+
 
 def sale(norm, **over):
     base = dict(id="a1", date="2026-05-04", price=250000, type=SINGLE, address="1 Main St", zip="19147")
@@ -102,6 +108,54 @@ class StoreTests(unittest.TestCase):
             self.assertEqual((row["price"], row["lat"]), ("260000", "39.9"))
 
 
+class IntakeTests(unittest.TestCase):
+    def test_sample_keeps_real_verdicts_newest_first_and_bounded(self):
+        norm = Normalizer(TODAY, sample=3)
+        sale(norm, id="k1", date="2026-05-01")
+        sale(norm, id="r1", date="2026-05-03", price=1)                         # rejected inside sale()
+        norm.peek(date="2026-05-02", price=300000, address="9 Elm St", kind="Commercial")
+        norm.reject("not a home")                                                # rejected by an adapter, after peek
+        norm.reject("no row")                                                    # no peek: counted, not sampled
+        sale(norm, id="old", date="2026-01-01")                                  # falls out: only the newest 3 are kept
+        sale(norm, id="bad", date="2099-01-01")                                  # invalid date: never sampled
+        got = norm.sample()
+        self.assertEqual([r["date"] for r in got], ["2026-05-03", "2026-05-02", "2026-05-01"])
+        self.assertEqual([(r["verdict"], r["reason"]) for r in got],
+                         [("reject", "nominal price (under $10,000)"), ("reject", "not a home"), ("keep", None)])
+        self.assertEqual(got[1]["address"], "9 Elm St")
+        self.assertEqual(got[2]["kind"], SINGLE)
+        self.assertEqual(set(got[0]), {"date", "price", "address", "kind", "verdict", "reason"})   # no party names
+        self.assertEqual(norm.seen, 6)
+
+    def test_sample_is_carried_forward_and_published_without_churn(self):
+        from engine import intake
+        with tempfile.TemporaryDirectory() as tmp:
+            store, out = Store(tmp), os.path.join(tmp, "out")
+            norm = Normalizer(TODAY)
+            store.upsert("x", [sale(norm, id="s1", date="2026-05-04")])
+            # no sample yet: the newest stored sales stand in, labelled as stored
+            fallback = intake.publish(store, "x", out)
+            self.assertEqual((fallback["kind"], fallback["records"][0]["date"]), ("stored", "2026-05-04"))
+            samples = [{"source": "Deeds", "readAt": "2026-11-23T09:17:00+00:00", "records": norm.sample()}]
+            intake.remember(store, "x", samples, "run1")
+            first = intake.publish(store, "x", out)
+            self.assertEqual((first["kind"], first["runId"], first["records"][0]["source"]), ("read", "run1", "Deeds"))
+            path = os.path.join(out, "x", "intake.json")
+            mtime = os.stat(path).st_mtime_ns
+            # a later run that read nothing (sources unchanged) keeps the last sample and its read time
+            self.assertIsNone(intake.remember(store, "x", [], "run2"))
+            again = intake.publish(store, "x", out)
+            self.assertEqual((again["runId"], again["readAt"]), ("run1", "2026-11-23T09:17:00+00:00"))
+            self.assertEqual(os.stat(path).st_mtime_ns, mtime)                      # unchanged content: file not rewritten
+
+    def test_merge_takes_the_newest_across_sources(self):
+        from engine import intake
+        a = {"source": "A", "records": [{"date": "2026-05-03"}, {"date": "2026-05-01"}]}
+        b = {"source": "B", "records": [{"date": "2026-05-02"}]}
+        got = intake.merge([a, b], size=2)
+        self.assertEqual([(r["date"], r["source"]) for r in got], [("2026-05-03", "A"), ("2026-05-02", "B")])
+
+
 class AnalyticsTests(unittest.TestCase):
     def test_statistics(self):
         self.assertEqual(analytics.median([3, 1, 2]), 2)
@@ -124,6 +178,70 @@ class AnalyticsTests(unittest.TestCase):
         self.assertEqual(out[-1], {"month": "2026-04", "count": counts[-1]})
         self.assertEqual(out[0]["month"], "2024-05")
         self.assertEqual(analytics.sales_by_month(months[:3], counts[:3]), [{"month": m, "count": c} for m, c in zip(months[:3], counts[:3])])
+
+
+class QueryFileTests(unittest.TestCase):
+    def rows(self):
+        def r(i, date, key, **over):
+            base = {"id": f"s{i}", "date": date, "month": date[:7], "price": 200000 + i, "type": SINGLE, "address": f"{i} Main St",
+                    "zip": "11104", "key": key, "sqft": 1000, "ppsf": 200.0, "yb": 1925, "beds": None, "lat": 40.74, "lon": -73.92,
+                    "assessed": None, "parcel": f"p{i}"}
+            return {**base, **over}
+        return [r(3, "2026-06-02", "Sunnyside|Staten Island"), r(1, "2020-01-05", "Sunnyside|Queens", sqft=None, lat=None, lon=None),
+                r(2, "2026-06-02", "Astoria|Queens"), r(4, "2024-03-01", "")]
+
+    def test_every_sale_is_written_deterministically_with_unique_area_names(self):
+        import csv
+        import gzip
+        cfg = {"area_by": "area", "area_names": {}}
+        areas = [{"key": "Astoria|Queens", "name": "Astoria", "group": "Queens", "sales12": 40, "median12": 700000, "ppsf12": 650,
+                  "topType": SINGLE, "lat": 40.76, "lon": -73.92}]
+        meta = {"city": "nyc", "name": "New York City", "through": "2026-05", "latestSale": "2026-06-02"}
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(os.path.join(d, "nyc"))
+            analytics.write_query_files(d, "nyc", cfg, self.rows(), areas, meta)
+            first = open(os.path.join(d, "nyc", "sales.csv.gz"), "rb").read()
+            analytics.write_query_files(d, "nyc", cfg, list(reversed(self.rows())), areas, meta)
+            self.assertEqual(open(os.path.join(d, "nyc", "sales.csv.gz"), "rb").read(), first)   # same rows, same bytes
+            with gzip.open(os.path.join(d, "nyc", "sales.csv.gz"), "rt", newline="") as f:
+                got = list(csv.DictReader(f))
+            self.assertEqual(list(got[0]), analytics.QUERY_COLUMNS)
+            self.assertEqual([g["date"] for g in got], ["2020-01-05", "2024-03-01", "2026-06-02", "2026-06-02"])
+            self.assertEqual(got[0]["area"], "Sunnyside, Queens")         # two boroughs share the name
+            self.assertEqual(got[2]["area"], "Astoria")
+            self.assertEqual(got[3]["area"], "Sunnyside, Staten Island")
+            self.assertEqual((got[1]["area"], got[0]["sqft"], got[0]["lat"]), ("", "", ""))   # unknowns are empty, read as NULL
+            with gzip.open(os.path.join(d, "nyc", "sales-recent.csv.gz"), "rt", newline="") as f:
+                self.assertEqual([g["date"] for g in csv.DictReader(f)], ["2024-03-01", "2026-06-02", "2026-06-02"])
+            with gzip.open(os.path.join(d, "nyc", "areas.csv.gz"), "rt", newline="") as f:
+                area = next(csv.DictReader(f))
+            self.assertEqual((area["area"], area["area_group"], area["median_12m"], area["rent"]), ("Astoria", "Queens", "700000", ""))
+            info = json.load(open(os.path.join(d, "nyc", "query.json")))
+            self.assertEqual((info["full"]["rows"], info["recent"]["rows"], info["recent"]["from"]), (4, 3, "2023-06-02"))
+            if not HAS_DUCKDB:   # without the optional package there is no Parquet file and the manifest says so
+                self.assertIsNone(info["parquet"])
+                self.assertFalse(os.path.exists(os.path.join(d, "nyc", "sales.parquet")))
+
+    @unittest.skipUnless(HAS_DUCKDB, "the optional duckdb package is not installed")
+    def test_parquet_export_is_typed_sorted_and_repeatable(self):
+        import duckdb
+        cfg = {"area_by": "area", "area_names": {}}
+        meta = {"city": "nyc", "name": "New York City", "through": "2026-05", "latestSale": "2026-06-02"}
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(os.path.join(d, "nyc"))
+            path = os.path.join(d, "nyc", "sales.parquet")
+            analytics.write_query_files(d, "nyc", cfg, self.rows(), [], meta)
+            first = open(path, "rb").read()
+            analytics.write_query_files(d, "nyc", cfg, self.rows(), [], meta)
+            self.assertEqual(open(path, "rb").read(), first)
+            self.assertEqual(json.load(open(os.path.join(d, "nyc", "query.json")))["parquet"]["rows"], 4)
+            con = duckdb.connect()
+            got = con.execute(f"SELECT area, date, price, sqft FROM read_parquet('{path}')").fetchall()
+            types = dict(con.execute(f"SELECT column_name, column_type FROM (DESCRIBE SELECT * FROM read_parquet('{path}'))").fetchall())
+            con.close()
+        self.assertEqual([g[0] for g in got], ["Astoria", "Sunnyside, Queens", "Sunnyside, Staten Island", None])   # area, then date
+        self.assertEqual((str(got[0][1]), got[0][2], got[1][3]), ("2026-06-02", 200002, None))
+        self.assertEqual({c: types[c] for c in ("date", "price", "zip", "lat")}, {"date": "DATE", "price": "INTEGER", "zip": "VARCHAR", "lat": "DOUBLE"})
 
 
 class CompletenessTests(unittest.TestCase):

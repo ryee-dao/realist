@@ -1,15 +1,18 @@
-/* Map colour scales shared by the Crime and Areas pages. Five steps each, checked with the dataviz validator:
-   every adjacent pair is at least 15 apart (OKLab x100) for normal vision and at least 10 under colour-blind simulation.
+/* Map colour scales shared by the Crime and Areas pages. Five steps each, step 5 = most / highest.
    --inc: reported incidents per 1,000 residents. Green (fewest) through yellow to red (most); lightness also changes.
-   --chg: 1-year change in reported incidents. Cool blue-grey = fell, grey = little change, brown = rose.
+   --chg: 1-year change in reported incidents. Blue = fell (favourable), grey = little change, red = rose.
+   --pchg: 1-year change in price. The same colours the other way round: red = fell, blue = rose (favourable).
+     Both change scales reuse the validated diverging --div values from styles.css.
    --price: median sale price. One blue hue, darker = higher. */
 :root {
   --inc-1: #1f7a43; --inc-2: #5fa84a; --inc-3: #ecc93c; --inc-4: #ee8636; --inc-5: #c8332e;
-  --chg-1: #9cc9d8; --chg-2: #4f8ba0; --chg-3: #4a5056; --chg-4: #a0652e; --chg-5: #e3a25a;
+  --chg-1: #5598e7; --chg-2: #1c5cab; --chg-3: #4a5056; --chg-4: #9c3d3c; --chg-5: #e66767;
+  --pchg-1: #e66767; --pchg-2: #9c3d3c; --pchg-3: #4a5056; --pchg-4: #1c5cab; --pchg-5: #5598e7;
   --price-1: #d6e7f9; --price-2: #86b6ee; --price-3: #3f86da; --price-4: #1e50a8; --price-5: #0f2458;
 }
 :root[data-theme="light"] {
   --inc-1: #1f7a43; --inc-2: #79b84a; --inc-3: #f2cd3c; --inc-4: #e8782c; --inc-5: #b3221f;
-  --chg-1: #1f5f78; --chg-2: #64a0b9; --chg-3: #c9ceca; --chg-4: #c98a4a; --chg-5: #7a3f10;
+  --chg-1: #1c5cab; --chg-2: #86b6ef; --chg-3: #c9ceca; --chg-4: #f1a9a8; --chg-5: #c93a39;
+  --pchg-1: #c93a39; --pchg-2: #f1a9a8; --pchg-3: #c9ceca; --pchg-4: #86b6ef; --pchg-5: #1c5cab;
   --price-1: #eaf2fc; --price-2: #9ec4ee; --price-3: #4f8fd8; --price-4: #1f5aaa; --price-5: #0b2d66;
 }

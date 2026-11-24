@@ -1,11 +1,12 @@
-// The live intake terminal on the pipeline page. It calls each city's public API straight from the visitor's
-// browser when the page opens and every 60 seconds, and shows the engine's keep-or-reject verdict per record.
+// The intake terminal on the pipeline page. It replays the newest records the engine read on its last real pull of
+// a city (data/<city>/intake.json, written by the engine), with the verdict each got. The browser never calls a
+// city's API: it re-reads our own file every few minutes and animates new rows in when the engine has read again.
 import { useEffect, useRef, useState } from 'react'
-import { Index } from '../lib/data'
+import { City, Index, Intake, IntakeRecord } from '../lib/data'
 import { dateLabel, usd } from '../lib/format'
-import { fetchLive, LiveResult, LiveRow } from '../lib/live'
+import { hms, secondsToNextRun } from '../lib/pipeline'
 
-const REFRESH = 60
+const RECHECK_MS = 5 * 60 * 1000
 
 export function Meter({ label, v }: { label: string; v: number }) {
   return (
@@ -16,86 +17,113 @@ export function Meter({ label, v }: { label: string; v: number }) {
 }
 
 const reducedMotion = () => typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches
-const rowKey = (r: LiveRow) => `${r.date}|${r.address}|${r.price}|${r.kind}`
-const clock = (t: number) => new Date(t).toLocaleTimeString('en-GB', { hour12: false })
+const rowKey = (r: IntakeRecord) => `${r.date}|${r.address}|${r.price}|${r.kind}|${r.verdict}`
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+const utc = (iso: string) => {
+  const d = new Date(iso)
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${MONTHS[d.getUTCMonth()]} ${d.getUTCDate()}, ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())} UTC`
+}
 
-interface Pull { data: LiveResult; fresh: Set<string>; first: boolean }
+const reasonLabel = (r: string | null) => { const t = (r ?? '').split(' (')[0]; return t.charAt(0).toUpperCase() + t.slice(1) }
 
-export default function LiveTerminal({ index, city, note }: { index: Index; city: string; note?: string }) {
-  const [pull, setPull] = useState<Pull | null>(null)
+async function fetchIntake(city: string): Promise<Intake> {
+  const res = await fetch(`data/${city}/intake.json?t=${Date.now()}`, { cache: 'no-store' })
+  if (!res.ok) throw new Error(res.status === 404 ? 'no sample yet' : `could not load (${res.status})`)
+  return res.json()
+}
+
+function useNextRun(): string {
+  const [s, setS] = useState(secondsToNextRun())
+  useEffect(() => { const id = setInterval(() => setS(secondsToNextRun()), 1000); return () => clearInterval(id) }, [])
+  return hms(s)
+}
+
+interface Loaded { data: Intake; fresh: Set<string>; first: boolean }
+
+export default function LiveTerminal({ index, city, note, lag, checked }: { index: Index; city: string; note?: string; lag: City[]; checked: string }) {
+  const [loaded, setLoaded] = useState<Loaded | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const [busy, setBusy] = useState(true)
   const [shown, setShown] = useState(0)
-  const [left, setLeft] = useState(REFRESH)
-  const seen = useRef<Set<string> | null>(null)
+  const seen = useRef<{ readAt: string | null; keys: Set<string> } | null>(null)
+  const next = useNextRun()
 
   useEffect(() => {
     let live = true
     seen.current = null
-    const run = () => {
-      setBusy(true)
-      fetchLive(city).then(
+    setLoaded(null); setError(null)
+    const load = () => {
+      if (document.hidden) return
+      fetchIntake(city).then(
         (d) => {
           if (!live) return
-          const keys = d.rows.map(rowKey)
-          const first = seen.current == null
-          const fresh = new Set(first ? keys : keys.filter((k) => !seen.current!.has(k)))
-          seen.current = new Set(keys)
-          setPull({ data: d, fresh, first })
-          setShown(first && !reducedMotion() ? 0 : d.rows.length)
-          setError(null); setBusy(false); setLeft(REFRESH)
+          const prev = seen.current
+          if (prev && prev.readAt === d.readAt) return          // nothing new since the last look
+          const keys = d.records.map(rowKey)
+          const fresh = new Set(prev ? keys.filter((k) => !prev.keys.has(k)) : keys)
+          seen.current = { readAt: d.readAt, keys: new Set(keys) }
+          setLoaded({ data: d, fresh, first: !prev })
+          setShown(!prev && !reducedMotion() ? 0 : d.records.length)
+          setError(null)
         },
-        (e) => { if (live) { setError(String(e?.message || e)); setBusy(false); setLeft(REFRESH) } },
+        (e) => { if (live && !seen.current) setError(String(e?.message || e)) },
       )
     }
-    setPull(null); setError(null)
-    run()
-    const id = window.setInterval(() => setLeft((s) => { if (s <= 1) { run(); return REFRESH } return s - 1 }), 1000)
-    return () => { live = false; clearInterval(id) }
+    load()
+    const id = window.setInterval(load, RECHECK_MS)
+    const onVisible = () => { if (!document.hidden) load() }
+    document.addEventListener('visibilitychange', onVisible)
+    return () => { live = false; clearInterval(id); document.removeEventListener('visibilitychange', onVisible) }
   }, [city])
 
-  useEffect(() => {   // on the first pull for a city, print lines one by one as they are checked
-    if (!pull || shown >= pull.data.rows.length) return
+  useEffect(() => {   // on first load, print the lines one by one, as the engine judged them
+    if (!loaded || shown >= loaded.data.records.length) return
     const id = window.setTimeout(() => setShown((n) => n + 1), 60)
     return () => clearTimeout(id)
-  }, [pull, shown])
+  }, [loaded, shown])
 
-  const data = pull?.data
-  const rows = data?.rows.slice(0, shown) ?? []
-  const done = !!data && shown >= data.rows.length
-  const keptN = data ? data.rows.filter((r) => !r.verdict).length : 0
+  const data = loaded?.data
+  const rows = data?.records.slice(0, shown) ?? []
+  const done = !!data && shown >= data.records.length
+  const keptN = data ? data.records.filter((r) => r.verdict === 'keep').length : 0
   const name = index.cities.find((c) => c.id === city)?.name ?? city
-  const newCount = pull && !pull.first ? pull.fresh.size : null
+  const stored = data?.kind === 'stored'
 
   return (
     <section className="card term">
       <header className="card-head">
         <div>
-          <h3><i className={`pulse ${data && !error ? 'on' : ''}`} />Live intake</h3>
-          <p>{error ? `Could not reach the source: ${error}` : data ? `Newest at source ${dateLabel(data.rows[0]?.date ?? '')} · records publish weeks late` : `Asking ${name} for its newest records…`}</p>
+          <h3><i className={`pulse ${data && !error ? 'on' : ''}`} />Intake</h3>
+          <p>{error ? `No intake sample for ${name}: ${error}` : data ? 'Newest sales we hold, and what we did with each' : `Loading ${name}…`}</p>
         </div>
         <span className="pipe-when">{note ?? name}</span>
       </header>
+      <ul className="lag">
+        {lag.map((c) => <li key={c.id}>{lag.length > 1 && <b>{c.name}</b>}<span>Newest sale the city has published: {dateLabel(c.latestSale)}</span><em>checked {dateLabel(checked.slice(0, 10)).replace(/, \d{4}$/, '')}</em></li>)}
+      </ul>
       <div className="term-box">
         <div className="term-body" aria-live="off">
-          <div className="term-line cmd"><span className="term-prompt">$</span> GET {data?.host ?? '…'} <em>newest {data?.rows.length ?? 40}</em></div>
-          {data && <div className="term-line cmd"><span className="term-ok">200</span> {data.ms} ms · {clock(data.fetchedAt)}{newCount != null && <em> · {newCount ? `${newCount} new since last pull` : 'no new records since last pull'}</em>}</div>}
+          <div className="term-line cmd"><span className="term-prompt">$</span> realist intake --city {city}</div>
+          {data && (stored
+            ? <div className="term-line cmd"><span className="term-ok">stored</span> <em>latest stored sales · {data.records.length} newest · no intake sample yet</em></div>
+            : <div className="term-line cmd"><span className="term-ok">read</span> {data.readAt ? utc(data.readAt) : '–'} <em>· {data.records.length} newest records · from our last run</em></div>)}
           {error && <div className="term-line cmd"><span className="term-err">ERR</span> {error}</div>}
           {rows.map((r, i) => {
             const k = rowKey(r)
+            const rej = r.verdict === 'reject'
             return (
-              <div key={`${k}#${i}`} className={`term-line rec ${r.verdict ? 'rej' : 'ok'} ${pull!.fresh.has(k) ? 'arrive' : ''}`}>
-                <span>{r.date}</span><b>{r.verdict ? 'REJECT' : 'KEEP'}</b><span className="num">{r.price == null ? '–' : usd(r.price)}</span>
-                <span className="term-addr">{r.address || '–'}</span><em>{r.verdict ?? r.kind}</em>
+              <div key={`${k}#${i}`} className={`term-line rec ${rej ? 'rej' : 'ok'} ${loaded!.fresh.has(k) ? 'arrive' : ''}`} title={r.source === 'stored' ? undefined : r.source}>
+                <span>{r.date}</span><b>{rej ? 'REJECT' : 'KEEP'}</b><span className="num">{r.price == null ? '–' : usd(r.price)}</span>
+                <span className="term-addr">{r.address || '–'}</span><em title={r.reason ?? undefined}>{rej ? reasonLabel(r.reason) : r.kind}</em>
               </div>
             )
           })}
-          {done && <div className="term-line cmd"><em>{data!.rows.length} read · {keptN} kept · {data!.rows.length - keptN} rejected</em></div>}
-          {!busy && <div className="term-line cursor">▍</div>}
+          {done && <div className="term-line cmd"><em>{data!.records.length} shown · {keptN} kept · {data!.records.length - keptN} rejected</em></div>}
+          {done && <div className="term-line cursor">▍</div>}
         </div>
         <div className="term-foot">
-          <span>{busy ? 'pulling…' : `next pull in ${left}s`}</span>
-          <span>in your browser · engine rules</span>
+          <span>next run in {next}</span>
+          <span>{stored ? 'from the store' : "from the engine's last run"}</span>
         </div>
       </div>
     </section>

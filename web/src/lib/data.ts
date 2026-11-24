@@ -83,6 +83,9 @@ export interface RunSummary {
   new: number; updated: number; fetched: number; warnings: number; failures: number
 }
 export interface Status { generatedAt: string; last: Run | null; history: RunSummary[] }
+/** <city>/intake.json: the newest records the engine read on its last real pull, with the verdict each got. */
+export interface IntakeRecord { date: string; price: number | null; address: string; kind: string; verdict: 'keep' | 'reject'; reason: string | null; source: string }
+export interface Intake { city: string; kind: 'read' | 'stored'; runId: string | null; readAt: string | null; sources: string[]; records: IntakeRecord[] }
 
 const cache = new Map<string, Promise<unknown>>()
 
@@ -108,4 +111,39 @@ export function useData<T>(path: string | null): { data: T | null; error: string
     return () => { live = false }
   }, [path])
   return state.path === path ? { data: state.data, error: state.error } : { data: null, error: null }
+}
+
+/** The price-drivers model (engine/model.py), published only for cities with property characteristics. */
+export interface ModelEffect { level: string; pct: number; lo: number | null; hi: number | null; n?: number; ref?: boolean; missing?: boolean }
+export interface ModelDriver {
+  name: string; kind: 'log' | 'cat' | 'fe'; ref?: string | null; coverage: number
+  headline: ModelEffect | null; levels?: ModelEffect[]
+  partialR2?: number | null   // unique share of in-sample variation, %
+  oos?: number | null         // rise in out-of-sample squared log error when left out, % of test variance
+}
+export interface ModelScore { n: number; mdape: number | null; within10: number | null; within20: number | null; bias: number | null }
+export interface ModelMethod { id: string; name: string; aligned: ModelScore; forecast: ModelScore }   // assessor, model, nearby, adjusted, ppsf, assessorNow
+export type ModelBreakdown = { label: string; n: number; forecast: Record<string, ModelScore>; [method: string]: ModelScore | Record<string, ModelScore> | string | number }
+export interface PriceModel {
+  city: string; through: string | null; latestSale: string; seconds?: number
+  sales: number; modelled: number; dropped?: Record<string, number>
+  fit: { n: number; trimmed: number; r2: number; rmse: number; columns: number; areas: number; quarters: number; se: string }
+  drivers: ModelDriver[]
+  coverage?: { name: string; coverage: number }[]
+  marketLevel?: { from: string; to: string; series: { q: string; pct: number }[] }
+  neighbourhoods?: { key: string; name: string; premium: number; n: number }[]
+  backtest: {
+    trainThrough: string; testFrom: string | null; testTo: string | null; testSales: number; n: number; share: number | null
+    forecastLevel?: string; methods: ModelMethod[]; byType: ModelBreakdown[]; byBand: ModelBreakdown[]
+    nearby?: { k: number; min: number; days: number; km: number; seconds: number; share: number | null }
+  }
+  assessorMisses?: { assessorElasticity: number; drivers: { name: string; oos: number | null; headline?: ModelEffect | null }[] } | null
+  assessorHistory?: boolean
+  currentRecord?: {
+    rehabResidualByYear?: { year: string; n: number; pct: number }[]
+    allYears?: { from: string | null; n: number; backtest: ModelScore }
+    recentOnly?: { from: string; n: number; backtest: ModelScore }
+    conditions?: Record<string, { allYears?: ModelEffect[] | null; recentOnly?: ModelEffect[] | null }>
+  }
+  caveat?: string | null; missing?: string; outliers?: string
 }

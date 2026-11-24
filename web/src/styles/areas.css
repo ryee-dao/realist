@@ -1,0 +1,18 @@
+/* Areas page only. Tokens only. */
+.a-map-card .card-head .segmented { flex: 0 1 auto; max-width: 100%; }
+.a-kv { margin-bottom: 6px; }
+.a-kv dd { overflow-wrap: anywhere; }
+.a-kv-note { margin: 0 0 10px; font-size: 11.5px; color: var(--muted); }
+.a-info {
+  display: inline-grid; place-items: center; width: 16px; height: 16px; margin-left: 6px; padding: 0; vertical-align: middle;
+  border: 1px solid var(--line-strong); border-radius: 50%; background: none; color: var(--text-2);
+  font: 600 10px/1 var(--font); cursor: help;
+}
+.a-info[aria-expanded="true"] { background: var(--brand-soft); color: var(--brand-ink); border-color: transparent; }
+.a-note { display: block; margin-top: 4px; font: 12px/1.4 var(--font); color: var(--text-2); }
+
+@media (max-width: 560px) {
+  .a-map-card .card-head .segmented > * { padding: 5px 9px; font-size: 12.5px; }
+  .a-detail .kv { grid-template-columns: minmax(0, 6.8rem) minmax(0, 1fr); gap: 6px 10px; font-size: 13px; }
+  .a-detail .kv dd { font-size: 12.5px; }
+}

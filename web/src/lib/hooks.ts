@@ -18,7 +18,8 @@ export function useWidth<T extends HTMLElement>(): [React.RefObject<T>, number] 
 export interface Route { city: string | null; page: string }
 
 function parse(): Route {
-  const parts = window.location.hash.replace(/^#\/?/, '').split('/').filter(Boolean)
+  // a page may keep its own state after '?' in the hash (Explore does), so the route is the part before it
+  const parts = window.location.hash.replace(/^#\/?/, '').split('?')[0].split('/').filter(Boolean)
   if (parts[0] === 'pipeline' || parts[0] === 'about') return { city: null, page: parts[0] }
   return { city: parts[0] || null, page: parts[1] || 'find' }
 }
@@ -41,20 +42,10 @@ const applyTheme = (t: Theme) => {
   document.querySelector('meta[name="theme-color"]')?.setAttribute('content', t === 'light' ? '#eef2ef' : '#121416')
 }
 
-/** Light or dark. index.html sets data-theme before first paint (saved choice, else the OS setting, else dark);
+/** Light or dark. index.html sets data-theme before first paint (?theme=, else the saved choice, else dark);
  *  this mirrors it in state so maps and canvases redraw when it changes. Returns the theme and a toggle. */
 export function useTheme(): [Theme, () => void] {
   const [theme, setTheme] = useState<Theme>(() => (document.documentElement.dataset.theme === 'light' ? 'light' : 'dark'))
-  useEffect(() => {
-    // Until the visitor picks one, follow the OS if it switches while the page is open.
-    let saved: string | null = null
-    try { saved = localStorage.getItem(THEME_KEY) } catch { /* storage blocked */ }
-    if (saved) return
-    const mq = window.matchMedia('(prefers-color-scheme: light)')
-    const on = () => { const t: Theme = mq.matches ? 'light' : 'dark'; applyTheme(t); setTheme(t) }
-    mq.addEventListener('change', on)
-    return () => mq.removeEventListener('change', on)
-  }, [])
   const toggle = () => {
     const next: Theme = theme === 'light' ? 'dark' : 'light'
     applyTheme(next)

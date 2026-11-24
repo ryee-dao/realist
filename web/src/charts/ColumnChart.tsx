@@ -10,13 +10,14 @@ interface Props {
   tickAlign?: 'center' | 'edge'
   format: (n: number) => string
   unit: string                     // what one column counts, e.g. "homes sold"
+  tipFormat?: (n: number) => string // tooltip value; defaults to a plain number
   color?: string
   height?: number
 }
 
 const M = { top: 12, right: 16, bottom: 26, left: 52 }
 
-export default function ColumnChart({ labels, values, ticks, tickAlign = 'center', format, unit, color = 'var(--series-1)', height = 220 }: Props) {
+export default function ColumnChart({ labels, values, ticks, tickAlign = 'center', format, unit, tipFormat, color = 'var(--series-1)', height = 220 }: Props) {
   const [ref, width] = useWidth<HTMLDivElement>()
   const [hover, setHover] = useState<number | null>(null)
   const n = values.length
@@ -66,7 +67,7 @@ export default function ColumnChart({ labels, values, ticks, tickAlign = 'center
       {hover != null && (
         <div className="tooltip" style={flip ? { right: width - tipLeft + 12, top: M.top } : { left: tipLeft + 12, top: M.top }}>
           <div className="tooltip-title">{labels[hover]}</div>
-          <div className="tooltip-row"><span>{unit}</span><b>{values[hover].toLocaleString('en-US')}</b></div>
+          <div className="tooltip-row"><span>{unit}</span><b>{tipFormat ? tipFormat(values[hover]) : values[hover].toLocaleString('en-US')}</b></div>
         </div>
       )}
     </div>

@@ -48,6 +48,9 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Optional engine extras (Parquet export for the Explore page)
+        run: pip install duckdb || echo "::warning::duckdb not installed; the Explore page will read the CSV files"
+
       - name: Engine tests
         run: python -m unittest discover -s engine/tests -v
 
@@ -76,9 +79,31 @@ jobs:
           cache: npm
           cache-dependency-path: web/package-lock.json
 
-      - name: Fetch recent for-sale listings
-        continue-on-error: true   # cities with a failed pull display a feed-unavailable state
-        run: python -m engine.live_listings
+      - uses: actions/cache/restore@v4
+        with:
+          path: harvested-listings
+          key: listings-v1-read-${{ github.run_id }}
+          restore-keys: listings-v1-
+
+      # Snapshots come from the "Harvest live listings" workflow's cache. With an empty cache (first run, or
+      # the cache expired after 7 idle days) this reads one publisher per city; a city that still has no
+      # snapshot shows the site's unavailable state rather than failing the build.
+      - name: Include latest city listing snapshots
+        run: |
+          for city in philadelphia nyc chicago; do
+            snapshot="harvested-listings/$city/new-listings.json"
+            if [ ! -s "$snapshot" ]; then
+              python -m engine.live_listings --city "$city" --output harvested-listings || echo "::warning::Could not refresh $city listings"
+            fi
+            mkdir -p "web/public/data/$city"
+            if [ -s "$snapshot" ]; then
+              cp "$snapshot" "web/public/data/$city/"
+            else
+              echo '{"status":"unavailable"}' > "web/public/data/$city/new-listings.json"
+            fi
+          done
+          # The New listings page's cards: merged listings + this run's area figures and price model (and tags if present)
+          python -m engine.listing_cards --output web/public/data --listings harvested-listings --store store || echo "::warning::Could not build listing cards"
 
       - name: Build the site
         working-directory: web

@@ -35,6 +35,26 @@ export function percentiles<T>(items: T[], key: (t: T) => string, value: (t: T) 
   return out
 }
 
+/** Share of the "Active market" factor that comes from current listings; recorded sales carry the rest. */
+export const LISTED_SHARE = 0.25
+
+/**
+ * "Active market" percentile: recorded sales dominate (3/4); current listings (homes for sale now,
+ * newly listed) add a minor part (1/4, the average of whichever of their percentiles exist). An item
+ * with no listing figures is ranked on sales alone. The blend is ranked again so grades keep their
+ * meaning (A = top fifth). Sold and listed counts are never added together.
+ */
+export function activityPercentiles<T>(items: T[], key: (t: T) => string, sold: (t: T) => number | null, listed: ((t: T) => number | null)[]): Map<string, number> {
+  const ps = percentiles(items, key, sold)
+  const ls = listed.map((f) => percentiles(items, key, f))
+  return percentiles(items, key, (t) => {
+    const k = key(t), p = ps.get(k)
+    if (p == null) return null
+    const extra = ls.map((m) => m.get(k)).filter((x): x is number => x != null)
+    return extra.length ? (1 - LISTED_SHARE) * p + LISTED_SHARE * (extra.reduce((a, b) => a + b, 0) / extra.length) : p
+  })
+}
+
 /** Letter grade from a percentile: A top fifth, E bottom fifth. */
 export const gradeOf = (p: number | null | undefined): Grade | null =>
   p == null ? null : p >= 80 ? 'A' : p >= 60 ? 'B' : p >= 40 ? 'C' : p >= 20 ? 'D' : 'E'

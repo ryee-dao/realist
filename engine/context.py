@@ -11,6 +11,7 @@ import io
 import json
 import os
 
+from . import characteristics
 from .http import FetchError
 from .schema import to_float, to_int
 
@@ -293,7 +294,7 @@ def harvest_boundaries(ctx, city, report):
 
 
 def harvest(ctx, city, cache):
-    """Run the three context pulls for one city. A failure here is reported but never blocks the sales data."""
+    """Run the context pulls for one city. A failure here is reported but never blocks the sales data."""
     jobs = [
         ("Reported crime incidents", CRIME[city]["publisher"], lambda r: harvest_crime(ctx, city, r)),
         ("Residents per block group", "U.S. Census Bureau, 2020 Census", lambda r: harvest_population(ctx, city, r)),
@@ -301,6 +302,9 @@ def harvest(ctx, city, cache):
         ("Listings by ZIP code", "Zillow Research", lambda r: harvest_listings(ctx, city, r, cache.setdefault("listings", {}))),
         ("Neighborhood boundaries", "City open data (GeoJSON)", lambda r: harvest_boundaries(ctx, city, r)),
     ]
+    # property characteristics and assessment history for the price-drivers model (each skipped while current)
+    for name, dataset, fn in characteristics.CITIES.get(city, {}).get("jobs", []):
+        jobs.append((name, dataset, lambda r, fn=fn: fn(ctx, r)))
     errors = []
     for name, dataset, job in jobs:
         report = {"name": name, "dataset": dataset, "fetched": 0, "kept": 0, "new": 0, "updated": 0, "unchanged": 0,

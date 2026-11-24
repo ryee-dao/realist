@@ -2,30 +2,19 @@ import '../styles/crime.css'
 import { ReactNode, useEffect, useMemo, useRef, useState } from 'react'
 import L from 'leaflet'
 import { Area, Areas, City, Grid, useData } from '../lib/data'
-import { cssVar, Theme, useWidth } from '../lib/hooks'
+import { cssVar, Theme } from '../lib/hooks'
 import { monthLabel, num, pct, usd, usdCompact } from '../lib/format'
 import { classOf, quintiles, SCALE } from '../components/MapView'
 import { Delta, Segmented, StatTile } from '../components/bits'
-import { niceTicks } from '../charts/scale'
 
-type StyleId = 'sections' | 'ranked' | 'scatter'
 type Metric = 'violent' | 'property' | 'change' | 'price'
 type Rate = 'violent' | 'property'
 
-const STYLES: { id: StyleId; label: string }[] = [
-  { id: 'sections', label: 'Sections' },
-  { id: 'ranked', label: 'Ranked' },
-  { id: 'scatter', label: 'Scatter' },
-]
 const METRICS: { id: Metric; label: string }[] = [
   { id: 'violent', label: 'Violent rate' },
   { id: 'property', label: 'Property rate' },
   { id: 'change', label: '1-year change' },
   { id: 'price', label: 'Median price' },
-]
-const RATES: { id: Rate; label: string }[] = [
-  { id: 'violent', label: 'Violent' },
-  { id: 'property', label: 'Property' },
 ]
 const RAMP: Record<Metric, string> = { violent: SCALE.incidents, property: SCALE.incidents, change: SCALE.change, price: SCALE.price }
 /** Words at each end of a legend; the swatches between carry the class ranges. */
@@ -55,7 +44,6 @@ const valueOf = (a: Area, m: Metric) => (m === 'change' ? a.crimeYoY : m === 'pr
 const r1 = (v: number | null | undefined) => (v == null ? '–' : v.toFixed(1))
 const fmtMetric = (m: Metric, v: number | null | undefined) => (m === 'price' ? usdCompact(v) : m === 'change' ? pct0(v) : r1(v))
 const pct0 = (v: number | null | undefined) => (v != null && Math.abs(v) < 0.5 ? '0%' : pct(v, 0))
-const arrow = (a: Area) => (a.crimeTrend === 'up' ? '▲' : a.crimeTrend === 'down' ? '▼' : a.crimeTrend === 'flat' ? '■' : '')
 /** The year-on-year change, or "no clear change" when it is not distinguishable from chance. */
 const changeText = (a: { crimeTrend?: string | null; crimeYoY: number | null }, flat = 'No clear change') =>
   a.crimeTrend === 'flat' ? flat : pct0(a.crimeYoY)
@@ -72,42 +60,7 @@ function quantile(values: number[], q: number) {
   return v.length ? v[Math.min(v.length - 1, Math.floor(q * (v.length - 1)))] : 0
 }
 
-function readStyle(): StyleId {
-  const s = new URLSearchParams(window.location.search).get('style')
-  return s === 'ranked' || s === 'scatter' ? s : 'sections'
-}
-
-/* ---------------- shared hover tooltip for the SVG / list views ---------------- */
-interface TipState { x: number; y: number; body: ReactNode }
-function useTip() {
-  const wrap = useRef<HTMLDivElement>(null)
-  const [tip, setTip] = useState<TipState | null>(null)
-  const show = (e: React.MouseEvent, body: ReactNode) => {
-    const r = wrap.current!.getBoundingClientRect()
-    setTip({ x: e.clientX - r.left, y: e.clientY - r.top, body })
-  }
-  const node = tip && (() => {
-    const w = wrap.current?.clientWidth ?? 0
-    const left = tip.x > w - 220 ? Math.max(0, tip.x - 214) : tip.x + 14
-    return <div className="tooltip crime-tip" style={{ left, top: tip.y + 14 }}>{tip.body}</div>
-  })()
-  return { wrap, show, hide: () => setTip(null), node }
-}
-
-function AreaTip({ a, rate }: { a: Area; rate?: Rate }) {
-  const rows: [string, string][] = []
-  if (!rate || rate === 'violent') rows.push(['Violent per 1,000', r1(a.violentRate)])
-  if (!rate || rate === 'property') rows.push(['Property per 1,000', r1(a.propertyRate)])
-  rows.push(['1-year change', changeText(a)], ['Median sale', usd(a.median12)], ['Sales, 12 months', num(a.sales12)])
-  return (
-    <>
-      <div className="tooltip-title">{a.name}{a.group ? <span className="muted"> · {a.group}</span> : null}</div>
-      {rows.map(([k, v]) => <div className="tooltip-row" key={k}><span>{k}</span><b>{v}</b></div>)}
-    </>
-  )
-}
-
-/* ---------------- 1. Sections ---------------- */
+/* ---------------- map and area panel ---------------- */
 interface Classing { cls: (number | null)[]; legend: string[] }
 
 function classify(areas: Area[], m: Metric): Classing {
@@ -261,10 +214,6 @@ function AreaPanel({ city, areas, selected, onSelect }: { city: City; areas: Are
       <Meter color={col('change')} label="1-year change" value={a.crimeTrend === 'flat' ? 0 : a.crimeYoY} cityValue={cx.crimeTrend === 'flat' ? 0 : cx.crimeYoY} lo={-chg} hi={chg} zero fmt={pct0}
         text={a.crimeTrend === 'flat' ? 'no clear change' : undefined} cityText={cx.crimeTrend === 'flat' ? 'no clear change' : undefined} />
       <Meter color={col('price')} label="Median sale price" value={a.median12} cityValue={city.kpi.median12} lo={dom.pmin} hi={dom.pmax} log fmt={usdCompact} />
-      <div className="map-legend" style={{ marginTop: 0 }}>
-        <span><i className="key-line city" />City figure</span>
-        <span className="muted">Bar colour matches the map</span>
-      </div>
     </aside>
   )
 }
@@ -291,213 +240,11 @@ function Sections({ city, theme, areas, selected, onSelect }: { city: City; them
   )
 }
 
-/* ---------------- 2. Ranked ---------------- */
-function Ranked({ city, areas, selected, onSelect }: { city: City; areas: Area[]; selected: number; onSelect: (i: number) => void }) {
-  const [rate, setRate] = useState<Rate>('violent')
-  const [q, setQ] = useState('')
-  const [desc, setDesc] = useState(true)
-  const tip = useTip()
-  const cityRate = rate === 'violent' ? city.context.violentRate : city.context.propertyRate
-  const withRate = useMemo(() => areas.map((a, i) => ({ a, i, v: rateOf(a, rate) })).filter((r): r is { a: Area; i: number; v: number } => r.v != null), [areas, rate])
-  const left = areas.length - withRate.length
-  const classing = useMemo(() => classify(areas, rate), [areas, rate])
-  // Cap the scale near the 97th percentile so one business district does not flatten every other bar.
-  const cap = useMemo(() => {
-    const vs = withRate.map((r) => r.v)
-    const max = Math.max(...vs)
-    const c = Math.max(quantile(vs, 0.97) * 1.1, (cityRate ?? 0) * 2)
-    return max <= c * 1.3 ? max : niceTicks(0, c, 4).pop()!
-  }, [withRate, cityRate])
-  const rows = useMemo(() => {
-    const s = q.trim().toLowerCase()
-    const hit = (a: Area) => !s || a.name.toLowerCase().includes(s) || a.group.toLowerCase().includes(s) || a.zips.some((z) => z.startsWith(s))
-    return withRate.filter((r) => hit(r.a)).sort((x, y) => (desc ? y.v - x.v : x.v - y.v))
-  }, [withRate, q, desc])
-  const cityPos = cityRate == null ? null : Math.min(100, (cityRate / cap) * 100)
-
-  return (
-    <>
-      <div className="crime-bar" style={{ marginBottom: 10 }}>
-        <Segmented label="Rate" options={RATES} value={rate} onChange={setRate} />
-        <div className="rank-tools">
-          <label className="field"><input type="search" placeholder="Name or ZIP" value={q} onChange={(e) => setQ(e.target.value)} aria-label="Search neighbourhoods by name or ZIP" /></label>
-          <button className="ghost" onClick={() => setDesc(!desc)}>{desc ? 'Highest first ↓' : 'Lowest first ↑'}</button>
-        </div>
-      </div>
-      <Legend metric={rate} labels={classing.legend} />
-      <div className="crime-wrap" ref={tip.wrap} onMouseLeave={tip.hide} style={{ marginTop: 8 }}>
-        <div className="rank-list">
-          <div className="rank-row head">
-            <span className="rank-name">{rows.length} of {withRate.length}</span>
-            <span className="rank-bar">{cityPos != null && <span className="rank-city-label" style={{ left: `${Math.max(6, Math.min(94, cityPos))}%` }}>City {r1(cityRate)}</span>}</span>
-            <span className="rank-rate">Per 1k</span>
-            <span className="rank-chg">1 yr</span>
-            <span className="rank-price">Median</span>
-          </div>
-          {rows.map(({ a, i, v }) => (
-            <div key={i} className={`rank-row ${i === selected ? 'sel' : ''}`} onClick={() => onSelect(i)}
-              onMouseMove={(e) => tip.show(e, <AreaTip a={a} />)}>
-              <span className="rank-name">{a.name}{a.group ? <small>{a.group}</small> : null}</span>
-              <span className="rank-bar">
-                <i className={`rank-fill ${v > cap ? 'over' : ''}`} style={{ background: swatch(rate, classing.cls[i]), width: `${Math.max(0.6, Math.min(100, (v / cap) * 100))}%` }} />
-                {cityPos != null && <i className="rank-city" style={{ left: `${cityPos}%` }} />}
-              </span>
-              <span className="rank-rate">{r1(v)}</span>
-              <span className="rank-chg"><span className="arrow" aria-hidden="true">{arrow(a)}</span> {a.crimeTrend === 'flat' ? <span className="flat">no clear change</span> : pct0(a.crimeYoY)}</span>
-              <span className="rank-price">{usdCompact(a.median12)}</span>
-            </div>
-          ))}
-          {!rows.length && <div className="loading" style={{ padding: 30 }}>No match.</div>}
-        </div>
-        {tip.node}
-      </div>
-      <p className="rank-note">
-        Bars past {r1(cap)} are cut short (marked with a break).
-        {left > 0 && ` ${left} ${left === 1 ? 'area is' : 'areas are'} left out: too few residents for a rate.`}
-      </p>
-    </>
-  )
-}
-
-/* ---------------- 3. Scatter ---------------- */
-function logTicks(lo: number, hi: number, width: number): number[] {
-  const all: number[] = []
-  for (let p = Math.floor(Math.log10(lo)); p <= Math.ceil(Math.log10(hi)); p++) for (const m of [1, 2, 5]) all.push(m * 10 ** p)
-  let t = all.filter((v) => v >= lo && v <= hi)
-  if (t.length > width / 64) t = t.filter((v) => !/^2/.test(String(v)))
-  if (t.length > width / 64) t = t.filter((v) => /^1/.test(String(v)))
-  return t
-}
-
-function Scatter({ city, areas, selected, onSelect }: { city: City; areas: Area[]; selected: number; onSelect: (i: number) => void }) {
-  const [rate, setRate] = useState<Rate>('violent')
-  const [ref, width] = useWidth<HTMLDivElement>()
-  const tip = useTip()
-  const W = Math.max(width, 300)
-  const wide = W >= 700
-  const H = W < 560 ? 420 : 520
-  const M = { l: 44, r: 16, t: 52, b: wide ? 56 : 72 }
-  const cityRate = rate === 'violent' ? city.context.violentRate : city.context.propertyRate
-  const cityPrice = city.kpi.median12
-
-  const classing = useMemo(() => classify(areas, rate), [areas, rate])
-  const pts = useMemo(() => areas.map((a, i) => ({ a, i, x: a.median12, y: rateOf(a, rate) }))
-    .filter((p): p is { a: Area; i: number; x: number; y: number } => p.x != null && p.x > 0 && p.y != null), [areas, rate])
-
-  const view = useMemo(() => {
-    if (!pts.length) return null
-    const xs = pts.map((p) => p.x), ys = pts.map((p) => p.y)
-    const xlo = Math.min(...xs) / 1.12, xhi = Math.max(...xs) * 1.12
-    const ymaxRaw = Math.max(...ys)
-    // Cap the y-axis near the 98th percentile; the few above it sit on the top edge as triangles.
-    const want = Math.max(quantile(ys, 0.98) * 1.15, (cityRate ?? 0) * 2)
-    const yt = niceTicks(0, ymaxRaw <= want * 1.3 ? ymaxRaw : want, 5)
-    const ymax = yt[yt.length - 1]
-    const iw = W - M.l - M.r, ih = H - M.t - M.b
-    const sx = (v: number) => M.l + ((Math.log(v) - Math.log(xlo)) / (Math.log(xhi) - Math.log(xlo))) * iw
-    const sy = (v: number) => M.t + ih - (Math.min(v, ymax) / ymax) * ih
-    const smax = Math.max(...pts.map((p) => p.a.sales12), 1)
-    const rad = (s: number) => 3 + Math.sqrt(s / smax) * (W < 560 ? 9 : 13)
-    return { xlo, xhi, yt, ymax, sx, sy, rad, iw, ih, over: pts.filter((p) => p.y > ymax).length }
-  }, [pts, W, H, cityRate]) // eslint-disable-line react-hooks/exhaustive-deps
-
-  const labels = useMemo(() => {
-    if (!view) return []
-    const byY = [...pts].sort((p, q) => q.y - p.y)
-    const byX = [...pts].sort((p, q) => q.x - p.x)
-    const pick = [pts.find((p) => p.i === selected), byY[0], byY[1], byX[0], byX[byX.length - 1], byY[byY.length - 1]]
-    const boxes: { x: number; y: number; w: number }[] = []
-    if (cityPrice != null) boxes.push({ x: view.sx(cityPrice), y: M.t, w: 80 })
-    if (cityRate != null) boxes.push({ x: W - M.r - 80, y: view.sy(cityRate) - 14, w: 80 })
-    const out: { i: number; x: number; y: number; end: boolean; text: string }[] = []
-    for (const p of pick) {
-      if (!p || out.some((o) => o.i === p.i)) continue
-      const cx = view.sx(p.x), cy = view.sy(p.y), r = view.rad(p.a.sales12)
-      const w = p.a.name.length * 6.6
-      const end = cx + r + 4 + w > W - M.r
-      const x = end ? cx - r - 4 - w : cx + r + 4
-      const y = Math.max(M.t + 12, cy + 4)
-      if (x < M.l || boxes.some((b) => x < b.x + b.w && x + w > b.x && Math.abs(y - b.y - 6) < 14)) continue
-      boxes.push({ x, y: y - 10, w })
-      out.push({ i: p.i, x: end ? x + w : x, y, end, text: p.a.name })
-    }
-    return out
-  }, [pts, view, selected, W, H, cityPrice, cityRate]) // eslint-disable-line react-hooks/exhaustive-deps
-
-  const xt = view ? logTicks(view.xlo, view.xhi, view.iw) : []
-  const rateWord = rate === 'violent' ? 'Violent' : 'Property'
-  return (
-    <>
-      <div className="crime-bar" style={{ marginBottom: 6 }}>
-        <Segmented label="Rate" options={RATES} value={rate} onChange={setRate} />
-        <div className="map-legend" style={{ marginTop: 0 }}>
-          <span><i className="key-box" style={{ background: 'var(--text-2)', borderRadius: '50%' }} />Dot size = sales in 12 months</span>
-          <span><i className="key-line" style={{ background: 'var(--line-strong)' }} />City figure</span>
-        </div>
-      </div>
-      <Legend metric={rate} labels={classing.legend} />
-      <div ref={ref} className="crime-wrap" onMouseLeave={tip.hide}>
-        <div className="scatter-scroll">
-          {view && width > 0 && (
-            <svg className="chart scatter" width={W} height={H} role="img" aria-label={`${rateWord} reported incidents per 1,000 residents against median sale price`}>
-              <g>
-                {view.yt.map((t) => <g key={t}>
-                  <line className={t === 0 ? 'baseline' : 'grid'} x1={M.l} x2={W - M.r} y1={view.sy(t)} y2={view.sy(t)} style={{ stroke: t === 0 ? 'var(--line-strong)' : 'var(--grid)' }} />
-                  <text className="axis" x={M.l - 6} y={view.sy(t) + 3.5} textAnchor="end" style={{ fill: 'var(--muted)', font: '10.5px var(--mono)' }}>{t}</text>
-                </g>)}
-                {xt.map((t) => <text key={t} className="axis" x={view.sx(t)} y={H - M.b + 16} textAnchor="middle" style={{ fill: 'var(--muted)', font: '10.5px var(--mono)' }}>{usdCompact(t)}</text>)}
-                <text className="axis-title" x={M.l - 38} y={14}>{rateWord} reported incidents per 1,000 residents</text>
-                <text className="axis-title" x={wide ? M.l + view.iw / 2 : W - M.r} y={H - M.b + (wide ? 36 : 56)} textAnchor={wide ? 'middle' : 'end'}>Median sale price, log scale</text>
-              </g>
-              {cityPrice != null && <>
-                <line className="guide" x1={view.sx(cityPrice)} x2={view.sx(cityPrice)} y1={M.t} y2={H - M.b} />
-                <text className="guide-lab halo" x={view.sx(cityPrice) + 4} y={M.t + 12}>City {usdCompact(cityPrice)}</text>
-              </>}
-              {cityRate != null && <>
-                <line className="guide" x1={M.l} x2={W - M.r} y1={view.sy(cityRate)} y2={view.sy(cityRate)} />
-                <text className="guide-lab halo" x={W - M.r - 4} y={view.sy(cityRate) - 4} textAnchor="end">City {r1(cityRate)}</text>
-              </>}
-              <g>
-                <text className="quad" x={wide ? M.l : 2} y={M.t - 12}>↖ Lower price, higher rate</text>
-                <text className="quad" x={W - M.r} y={M.t - 12} textAnchor="end">Higher price, higher rate ↗</text>
-                <text className="quad" x={wide ? M.l : 2} y={H - M.b + 36}>↙ Lower price, lower rate</text>
-                <text className="quad" x={W - M.r} y={H - M.b + 36} textAnchor="end">Higher price, lower rate ↘</text>
-              </g>
-              <g>
-                {[...pts].sort((p, q) => q.a.sales12 - p.a.sales12).map((p) => {
-                  const cx = view.sx(p.x), cy = view.sy(p.y), r = view.rad(p.a.sales12)
-                  const on = p.i === selected
-                  const fill = { style: { fill: swatch(rate, classing.cls[p.i]) } }
-                  const events = { onClick: () => onSelect(p.i), onMouseMove: (e: React.MouseEvent) => tip.show(e, <AreaTip a={p.a} rate={rate} />) }
-                  return p.y > view.ymax
-                    ? <path key={p.i} className={`dot ${on ? 'sel' : ''}`} d={`M${cx},${cy - 7}L${cx + 7},${cy + 5}L${cx - 7},${cy + 5}Z`} {...fill} {...events} />
-                    : <circle key={p.i} className={`dot ${on ? 'sel' : ''}`} cx={cx} cy={cy} r={r} {...fill} {...events} />
-                })}
-              </g>
-              {labels.map((l) => <text key={l.i} className="lab halo" x={l.x} y={l.y} textAnchor={l.end ? 'end' : 'start'}>{l.text}</text>)}
-            </svg>
-          )}
-        </div>
-        {tip.node}
-      </div>
-      {view && view.over > 0 && <p className="rank-note">▲ {view.over} above {view.ymax}, drawn on the top edge.</p>}
-    </>
-  )
-}
-
 /* ---------------- page ---------------- */
 export default function ComparePage({ city, theme }: { city: City; theme: Theme }) {
   const { data } = useData<Areas>(`${city.id}/areas.json`)
-  const [style, setStyleState] = useState<StyleId>(readStyle)
   const [selected, setSelected] = useState<number | null>(null)
   const areas = data?.areas ?? []
-
-  const setStyle = (s: StyleId) => {
-    setStyleState(s)
-    const u = new URL(window.location.href)
-    u.searchParams.set('style', s)
-    window.history.replaceState(null, '', u.toString())
-  }
 
   // Start on the most populous area with a rate so every view is complete at rest.
   useEffect(() => {
@@ -511,34 +258,28 @@ export default function ComparePage({ city, theme }: { city: City; theme: Theme 
   const sel = selected ?? 0
   return (
     <>
-      <div className="tiles">
-        <StatTile label="Violent per 1,000 residents" value={r1(cx.violentRate)}>
+      <div className="tiles crime-tiles">
+        <StatTile label="Violent per 1,000" value={r1(cx.violentRate)}>
           <span className="muted">12 months to {cx.crimeThrough ? monthLabel(cx.crimeThrough) : '–'}</span>
         </StatTile>
-        <StatTile label="Property per 1,000 residents" value={r1(cx.propertyRate)}>
+        <StatTile label="Property per 1,000" value={r1(cx.propertyRate)}>
           <span className="muted">12 months, citywide</span>
         </StatTile>
-        <StatTile label="Reported incidents, 1 year" value={changeText(cx)}>{cx.crimeTrend === 'flat' ? <span className="muted">vs year before</span> : <Delta value={cx.crimeYoY} suffix="vs year before" />}</StatTile>
-        <StatTile label="Median sale price" value={usd(city.kpi.median12)}><Delta value={city.kpi.medianYoY} suffix="vs year before" /></StatTile>
+        <StatTile label="Incidents, 1 year" value={changeText(cx)}><span className="muted">vs the year before</span></StatTile>
+        <StatTile label="Median sale price" value={usd(city.kpi.median12)}><Delta value={city.kpi.medianYoY} suffix="in a year" /></StatTile>
       </div>
 
       <section className="card">
         <header className="card-head">
           <div><h3>Reported incidents by neighbourhood</h3></div>
-          <div className="field" style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-            <span>Style preview</span>
-            <Segmented label="Style preview" options={STYLES} value={style} onChange={setStyle} />
-          </div>
         </header>
         {!data ? <div className="loading">Loading…</div>
-          : style === 'sections' ? <Sections city={city} theme={theme} areas={areas} selected={sel} onSelect={setSelected} />
-          : style === 'ranked' ? <Ranked city={city} areas={areas} selected={sel} onSelect={setSelected} />
-          : <Scatter city={city} areas={areas} selected={sel} onSelect={setSelected} />}
+          : <Sections city={city} theme={theme} areas={areas} selected={sel} onSelect={setSelected} />}
       </section>
 
       <p className="footnote">
-        Reported incidents recorded by the <a href={city.crimeLink} target="_blank" rel="noreferrer">{city.crimeSource}</a>, last 12 months. Violent: homicide, rape, robbery, aggravated assault. Property: burglary, theft, vehicle theft, arson.<br />
-        Rates are per resident, so places with many visitors read high. Rates are adjusted toward the city rate where few people live, and a change is shown only when it is unlikely to be chance. No demographic data is used.
+        Police reports from the <a href={city.crimeLink} target="_blank" rel="noreferrer">{city.crimeSource}</a>, last 12 months. Violent: homicide, rape, robbery, aggravated assault. Property: burglary, theft, vehicle theft, arson.<br />
+        Rates are per resident, so busy places with few residents read high. Where few people live, rates are pulled toward the city rate. A change shows only when it is unlikely to be chance.
       </p>
     </>
   )

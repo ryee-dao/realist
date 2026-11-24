@@ -82,6 +82,9 @@ def enrich(ctx, pins):
 
 
 def normalize(norm, row, lookup):
+    info = lookup.get(row.get("pin") or "", {})
+    norm.peek(date=row.get("sale_date"), price=row.get("sale_price"),
+              address=title(info.get("address")) or f"Parcel {row.get('pin') or '?'}", kind=f"Class {row.get('class') or '?'}")
     if row.get("is_multisale"):
         return norm.reject("deed covers several properties")
     if row.get("sale_filter_deed_type"):

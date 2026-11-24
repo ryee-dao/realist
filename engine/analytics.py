@@ -1,5 +1,8 @@
 """Turns the harvest store into the small JSON files the site reads."""
+import csv
 import datetime as dt
+import gzip
+import io
 import json
 import math
 import os
@@ -9,7 +12,7 @@ from .cities import CITIES
 from .context import CRIME
 from .geo import Locator
 from .schema import COOP, TYPES, to_float, to_int
-from . import stats
+from . import model, stats
 
 ALL = "All homes"
 MIN_N = 5            # fewest sales for a monthly or quarterly median to be published
@@ -425,7 +428,7 @@ def area_label(cfg, key):
     if cfg["area_by"] == "zip":
         return cfg["area_names"].get(key, f"ZIP {key}"), key
     name, _, group = key.partition("|")
-    return name, group
+    return cfg.get("area_names", {}).get(name, name), group   # display override (see cities.py); the key is unchanged
 
 
 def window_stats(rows):
@@ -608,12 +611,27 @@ def build_city(store, city, out_dir):
     _dump(os.path.join(out_dir, city, "overview.json"),
           {**meta, "months": months, "typeOrder": [ALL] + present, "types": overview_types, "repeatIndex": repeat_index,
            "listings": context.pop("listings", None)})
-    _dump(os.path.join(out_dir, city, "areas.json"), {**meta, "quarters": quarters, "areas": areas})
+    # citywide price growth to set beside each area's, by both methods so an area is compared like with like
+    all12, all_prev12, all_old12 = (window_stats([r for r in rows if within(r, w)]) for w in (cur12, prev12, old12))
+    city_growth = {"repeat1": city_g1, "repeat5": city_g5,
+                   "median1": pct_change(all12["median"], all_prev12["median"]), "median5": pct_change(all12["median"], all_old12["median"])}
+    _dump(os.path.join(out_dir, city, "areas.json"), {**meta, "quarters": quarters, "cityGrowth": city_growth, "areas": areas})
     _dump(os.path.join(out_dir, city, "sales.json"),
           {**meta, "from": recent[-1]["date"] if recent else None, "typeNames": TYPES, "count": len(recent), "columns": cols})
+    from . import area_trends   # imported here: it builds on this module's helpers
+    _dump(os.path.join(out_dir, city, "area-series.json"), {**meta, **area_trends.area_series(rows, areas, months, through)})
+    _dump(os.path.join(out_dir, city, "sold.json"), {**meta, **area_trends.sold_summary(rows, areas, through)})
+
+    write_query_files(out_dir, city, cfg, rows, areas, meta)
 
     _dump(os.path.join(out_dir, city, "grid.json"), {**meta, "cell": 0.005, "crimeThrough": context["crimeThrough"],
                                                       "columns": build_grid(store, city, rows, shift(through, -23), add_context.nearest, area_index)})
+
+    # ---- what drives price (only where the city has a property-characteristics lookup) ----
+    try:
+        model.write_city(store, city, rows, out_dir, through, area_names={k: area_label(cfg, k)[0] for k in {r["key"] for r in rows} if k})
+    except Exception as e:     # the model is an extra; it must never block the site's other data
+        print(f"  model: FAILED {type(e).__name__}: {e}", flush=True)
 
     # ---- facts for quality checks and the index ----
     last12 = [r for r in rows if within(r, cur12)]
@@ -630,6 +648,115 @@ def build_city(store, city, out_dir):
             "sqft": round(sum(1 for r in last12 if r["sqft"]) / n12 * 100, 1),
         },
     }
+
+
+# ---- query files for the in-browser SQL page (Explore) ----
+QUERY_COLUMNS = ["date", "price", "type", "address", "zip", "area", "sqft", "year_built", "beds", "lat", "lon", "assessed", "parcel"]
+AREA_COLUMNS = ["area", "area_group", "sales_12m", "median_12m", "median_12m_low", "median_12m_high", "median_yoy_pct",
+                "ppsf_12m", "growth_1y_pct", "growth_5y_pct", "growth_method", "top_type", "rent", "gross_yield_pct", "lat", "lon"]
+QUERY_RECENT_YEARS = 3
+
+
+def area_display_names(cfg, keys):
+    """One unique, readable name per area key: the plain name, or "name, group" where two groups share a name."""
+    labels = {k: area_label(cfg, k) for k in keys if k}
+    seen = Counter(name for name, _ in labels.values())
+    return {k: (f"{name}, {group}" if seen[name] > 1 and group else name) for k, (name, group) in labels.items()}
+
+
+def _cell(v):
+    return "" if v is None else v
+
+
+def _write_csv_gz(path, columns, rows):
+    """Gzipped CSV with a zeroed timestamp and no file name, so unchanged data gives identical bytes. Returns (gzip, raw) sizes."""
+    buf = io.StringIO()
+    w = csv.writer(buf, lineterminator="\n")
+    w.writerow(columns)
+    w.writerows(rows)
+    data = buf.getvalue().encode("utf-8")
+    with open(path + ".tmp", "wb") as raw:
+        with gzip.GzipFile(fileobj=raw, mode="wb", mtime=0, filename="", compresslevel=9) as gz:
+            gz.write(data)
+    os.replace(path + ".tmp", path)
+    return os.path.getsize(path), len(data)
+
+
+# column types for both the Parquet export and the browser's read_csv; keep in step with web/src/lib/querySchema.ts
+QUERY_TYPES = {"date": "DATE", "price": "INTEGER", "type": "VARCHAR", "address": "VARCHAR", "zip": "VARCHAR", "area": "VARCHAR",
+               "sqft": "INTEGER", "year_built": "INTEGER", "beds": "INTEGER", "lat": "DOUBLE", "lon": "DOUBLE", "assessed": "BIGINT",
+               "parcel": "VARCHAR"}
+PARQUET_ROW_GROUP = 32768
+
+
+def write_parquet(csv_path, parquet_path):
+    """Sales as Parquet, when the optional `duckdb` package is installed; otherwise nothing (the CSV is enough).
+
+    Rows are sorted by area, then date, so each row group covers few areas and a short span and the browser can skip
+    most of the file over HTTP range requests. One thread keeps the output identical for identical input. Returns the
+    size in bytes, or None when the package is missing or the export failed (a stale file is removed either way).
+    """
+    try:
+        import duckdb
+    except ImportError:
+        duckdb = None
+    if duckdb is not None:
+        try:
+            types = ", ".join(f"'{c}': '{t}'" for c, t in QUERY_TYPES.items())
+            con = duckdb.connect()
+            try:
+                con.execute("SET threads TO 1")
+                con.execute("SET preserve_insertion_order TO true")
+                src, dst = (p.replace("'", "''") for p in (csv_path, parquet_path + ".tmp"))
+                con.execute(
+                    f"COPY (SELECT * FROM read_csv('{src}', header = true, delim = ',', quote = '\"', escape = '\"', "
+                    f"columns = {{{types}}}, nullstr = '') "
+                    f"ORDER BY area NULLS LAST, date, parcel, price) "
+                    f"TO '{dst}' (FORMAT parquet, COMPRESSION zstd, ROW_GROUP_SIZE {PARQUET_ROW_GROUP})")
+            finally:
+                con.close()
+            os.replace(parquet_path + ".tmp", parquet_path)
+            return os.path.getsize(parquet_path)
+        except Exception as e:   # an extra: never block the site's other data
+            print(f"  parquet: FAILED {type(e).__name__}: {e}", flush=True)
+    for path in (parquet_path, parquet_path + ".tmp"):
+        if os.path.exists(path):
+            os.remove(path)
+    return None
+
+
+def write_query_files(out_dir, city, cfg, rows, areas, meta):
+    """Every sale the analytics use, as gzipped CSV for DuckDB in the browser, plus a recent slice and the area table.
+
+    `sales.csv.gz` is the full history, `sales-recent.csv.gz` the last few years (the default on small screens),
+    `areas.csv.gz` the published 12-month figures per area, and `sales.parquet` the full history again when the optional
+    package is installed. `query.json` describes them; `rawBytes` (the uncompressed size) keeps the page's download
+    progress right when a server undoes the gzip in transit.
+    """
+    names = area_display_names(cfg, {r["key"] for r in rows})
+    ordered = sorted(rows, key=lambda r: (r["date"], r["id"]))
+    table = [[r["date"], r["price"], r["type"], r["address"], r["zip"], names.get(r["key"], ""), _cell(r["sqft"]), _cell(r["yb"]),
+              _cell(r["beds"]), _cell(r["lat"]), _cell(r["lon"]), _cell(r["assessed"]), r["parcel"]] for r in ordered]
+    latest = meta["latestSale"]
+    since = f"{int(latest[:4]) - QUERY_RECENT_YEARS}{latest[4:]}"   # compared as text, so a 29 February needs no special case
+    recent = [t for t in table if t[0] >= since]
+    base = os.path.join(out_dir, city)
+    full_bytes, full_raw = _write_csv_gz(os.path.join(base, "sales.csv.gz"), QUERY_COLUMNS, table)
+    recent_bytes, recent_raw = _write_csv_gz(os.path.join(base, "sales-recent.csv.gz"), QUERY_COLUMNS, recent)
+    area_rows = [[names.get(a["key"], a["name"]), a["group"], a["sales12"], a["median12"], a.get("medianLow"), a.get("medianHigh"),
+                  a.get("medianYoY"), a["ppsf12"], a.get("priceGrowth1"), a.get("priceGrowth5"), a.get("growthMethod"), a["topType"],
+                  a.get("rent"), a.get("yield"), a["lat"], a["lon"]] for a in sorted(areas, key=lambda a: a["key"])]
+    area_bytes, _ = _write_csv_gz(os.path.join(base, "areas.csv.gz"), AREA_COLUMNS, [[_cell(v) for v in r] for r in area_rows])
+    parquet = write_parquet(os.path.join(base, "sales.csv.gz"), os.path.join(base, "sales.parquet"))
+    _dump(os.path.join(base, "query.json"), {
+        **meta, "columns": QUERY_COLUMNS, "areaColumns": AREA_COLUMNS,
+        "parquet": {"file": "sales.parquet", "rows": len(table), "bytes": parquet, "sortedBy": ["area", "date"]} if parquet else None,
+        "full": {"file": "sales.csv.gz", "rows": len(table), "from": table[0][0] if table else None, "bytes": full_bytes,
+                 "rawBytes": full_raw},
+        "recent": {"file": "sales-recent.csv.gz", "rows": len(recent), "from": since, "bytes": recent_bytes, "rawBytes": recent_raw,
+                   "years": QUERY_RECENT_YEARS},
+        "areas": {"file": "areas.csv.gz", "rows": len(area_rows), "bytes": area_bytes},
+    })
 
 
 def _dump(path, obj):

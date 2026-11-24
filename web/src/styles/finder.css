@@ -93,19 +93,48 @@
 .f-how summary { display: inline; cursor: pointer; color: var(--text-2); text-decoration: underline dotted; text-underline-offset: 2px; list-style: none; }
 .f-how summary::-webkit-details-marker { display: none; }
 .f-how details[open] { display: block; flex-basis: 100%; order: 9; }
-.f-how-body { display: block; margin-top: 4px; max-width: 90ch; color: var(--text-2); }
+.f-how-body { display: grid; gap: 2px; margin-top: 4px; max-width: 70ch; color: var(--text-2); }
 .f-hidden { color: var(--text-2); text-decoration: underline dotted; text-underline-offset: 2px; cursor: help; }
-.f-range-h { text-align: right; }
-.f-table td.f-range { font: 500 11.5px var(--mono); color: var(--muted); text-align: right; }
 
 .f-inc { color: var(--warn-ink); font: 700 12px var(--mono); margin-left: 3px; cursor: help; }
 .f-why { display: flex; flex-wrap: wrap; gap: 2px 12px; font-size: 12px; color: var(--text-2); }
 .f-why .f-warn { color: var(--warn-ink); }
 .f-weights .weight { min-width: 0; grid-template-columns: minmax(0, 1fr); }
 .f-weights .weight-top { min-width: 0; }
-.f-table td.f-range.shifts { color: var(--text-2); }
 /* slider grid: real gutters, label + weight on top, slider + must pill below */
 .weights.f-weights { column-gap: 22px; row-gap: 10px; }
 .f-weights .weight-top { display: flex; justify-content: space-between; gap: 8px; }
 @media (max-width: 1480px) { .weights.f-weights { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
 @media (max-width: 560px) { .weights.f-weights { grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 14px; } }
+.f-listings { margin: 0 0 10px; font-size: 12px; color: var(--muted); }
+.f-detail .f-listings { margin: 0; }
+
+/* fact notes: a full-width small line under the value (units, yield caveat) */
+.f-fact-note { grid-column: 1 / -1; margin-top: -4px; font-size: 11.5px; color: var(--muted); text-align: right; }
+.f-weights .weight-top b span { font: inherit; color: inherit; letter-spacing: inherit; text-transform: none; white-space: nowrap; }
+.f-weights .f-sm { display: none; }
+.f-crime { display: inline-grid; justify-items: end; font-size: 10.5px; line-height: 1.1; }
+@media (max-width: 1400px) { .f-table .f-name { max-width: 230px; } }
+.f-table td .f-cell { vertical-align: middle; }
+/* incidents is always the last factor column: let its two-word unit header wrap */
+.f-table thead th.num:last-child .sort { white-space: normal; max-width: 92px; text-align: right; line-height: 1.25; }
+
+/* phone: compact controls, short labels, tighter table */
+@media (max-width: 560px) {
+  .f-controls { gap: 10px; padding-block: 12px; }
+  .f-row { gap: 8px; }
+  .f-row > .segmented { width: 100%; }
+  .f-inputs { width: 100%; display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .f-inline { flex-direction: column; align-items: stretch; gap: 3px; font-size: 12px; }
+  .f-inline input, .f-inline select { width: 100%; min-width: 0; box-sizing: border-box; }
+  .f-weights .f-lg { display: none; }
+  .f-weights .f-sm { display: inline; }
+  .f-tiers.capped { max-height: 200px; }
+  .f-detail-title h2 { font-size: 17px; }
+  .f-detail-score b { font-size: 22px; }
+  .f-table { max-height: 560px; }
+  .f-table .f-name { max-width: 150px; }
+  .f-table .f-name-sub { display: none; }
+  .f-ts .mini { display: none; }
+  .finder > .footnote { margin-top: 0; }
+}

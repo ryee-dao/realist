@@ -1,0 +1,41 @@
+/* Sidebar groups (desktop) and the compact top bar with a "More" menu (phones). Overrides styles.css. */
+.shell .side-top { display: flex; align-items: center; justify-content: space-between; }
+.shell .side-main, .shell .side-more, .shell .side-group { display: contents; }
+.shell .menu-btn { display: none; }
+
+@media (max-width: 900px) {
+  .shell { grid-template-rows: auto 1fr; }
+  .shell .side { align-content: start; display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; padding: 10px 12px 8px; flex-wrap: nowrap; }
+  .shell .brand { padding: 0 4px; font-size: 16px; }
+  .shell .menu-btn {
+    display: inline-flex; align-items: center; gap: 7px; border: 1px solid var(--line); background: var(--surface-2);
+    border-radius: 8px; padding: 6px 10px; font: 600 13px var(--font); color: var(--text-2); max-width: 60%;
+  }
+  .shell .menu-btn.on { background: var(--brand-soft); color: var(--brand-ink); border-color: transparent; }
+  .shell .side-main { display: grid; grid-template-columns: repeat(4, auto); justify-content: space-between; gap: 2px; }
+  .shell .side-main a.item { padding: 6px 8px; font-size: 13.5px; white-space: nowrap; justify-content: center; }
+
+  .shell .side-more { display: none; }
+  .shell .side.menu-open .side-more { display: grid; gap: 4px; padding: 6px 0 4px; border-top: 1px solid var(--line); }
+  .shell .side.menu-open .side-label { display: block; padding: 6px 4px 0; }
+  .shell .side-group { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 6px; }
+  .shell .side-group a.item { padding: 8px 8px; }
+  .shell .side-group a.item svg { display: block; }
+  .shell .side.menu-open .side-foot { margin: 6px 0 0; padding: 10px 4px 0; border-top: 1px solid var(--line); flex-direction: row; flex-wrap: wrap; align-items: center; justify-content: space-between; }
+  .shell .side.menu-open .side-foot .status { display: flex; }
+}
+
+@media (max-width: 360px) {
+  .shell .side-main a.item { padding: 6px 4px; font-size: 12.5px; }
+}
+
+/* city switcher: three compact columns on phones */
+@media (max-width: 600px) {
+  .main .ticker { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .main .ticker a { border-top: 0; border-left: 1px solid var(--line); padding: 8px 10px; display: block; }
+  .main .ticker a:first-child { border-left: 0; }
+  .main .ticker small { display: block; font-size: 9.5px; letter-spacing: 0.06em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .main .ticker b { display: block; font-size: 14px; }
+  .main .ticker b em { display: block; margin: 1px 0 0; font-size: 11px; }
+  .main .ticker .spark { display: none; }
+}

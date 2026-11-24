@@ -74,6 +74,7 @@ def normalize(norm, row):
     address = clean_text(row.get("address"))
     parcel = f"{boro}-{row.get('block')}-{row.get('lot')}"
     key = hashlib.sha1(f"{parcel}|{date}|{price}|{address}".encode()).hexdigest()[:16]
+    norm.peek(date=date, price=price, address=title(address), kind=title(clean_text(row.get("building_class_category"))[3:]))
     return norm.sale(
         id=key, date=date, price=price, type=kind, address=title(address),
         zip=row.get("zip_code"), area=title(row.get("neighborhood")), group=BOROUGHS.get(boro, ""),
@@ -189,6 +190,10 @@ def resolve_lot(legal, known, pluto_lots, condo_lots, blocks):
 
 def normalize_deed(norm, master, legals, known, pluto_lots, condo_lots, blocks):
     """One ACRIS deed as a sale, or a counted rejection."""
+    first = legals[0] if legals else {}
+    street = clean_text(f"{first.get('street_number') or ''} {first.get('street_name') or ''}")
+    norm.peek(date=master.get("document_date"), price=master.get("document_amt"),
+              address=title(street) + (f" #{first['unit']}" if first.get("unit") else ""), kind=f"Deed · {first.get('property_type') or '?'}")
     lots = {_parcel(l) for l in legals}
     if not lots or "" in lots:
         return norm.reject(R_NO_LEGALS)

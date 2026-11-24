@@ -1,0 +1,28 @@
+/* Market page: area picker and single-area notes. */
+.market-area { flex: 0 1 280px; min-width: 0; }
+.market-area select { width: 100%; }
+.market-filters { margin-bottom: 0; }
+.market-note { font-size: 12.5px; margin: 0; }
+.market-thin { font-size: 13px; color: var(--text-2); }
+.link-btn { border: 0; background: none; padding: 0; color: inherit; font: inherit; text-align: left; cursor: pointer; text-decoration: underline; text-decoration-color: var(--line-strong); text-underline-offset: 3px; }
+.link-btn:hover { text-decoration-color: currentColor; }
+
+@media (max-width: 600px) {
+  .market-area { flex: 1 1 100%; }
+}
+
+/* movers: drop the sparkline column on phones so the table fits */
+@media (max-width: 600px) {
+  .movers th:nth-child(4), .movers td:nth-child(4) { display: none; }
+  .movers td, .movers th { padding-left: 6px; padding-right: 6px; }
+}
+
+/* figures two to a row on phones */
+@media (max-width: 600px) {
+  .market-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+  .market-tiles .tile { padding: 11px 12px; }
+  .market-tiles .tile.hero { grid-column: 1 / -1; }
+  .market-tiles .tile-value { font-size: 20px; }
+  .market-tiles .tile-label, .market-tiles .tile-foot { font-size: 12px; }
+}
+.market-tiles .tile-foot, .market-tiles .delta { white-space: normal; overflow-wrap: anywhere; }
