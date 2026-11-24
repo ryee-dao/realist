@@ -2,7 +2,7 @@
 
 Home-sale analytics for Philadelphia, New York City and Chicago, built from public records and refreshed every day by an automated pipeline.
 
-**Live site: https://ryee-dao.github.io/realist/**
+**Live site: https://ryandao.dev/realist/**
 
 Realist shows what homes actually sold for, and helps turn that into a shortlist:
 
@@ -14,7 +14,7 @@ Realist shows what homes actually sold for, and helps turn that into a shortlist
 - **Recent sales**: individual sales compared with what is typical nearby.
 - **Explore**: every recorded sale, queried in the browser with DuckDB: a filter-and-group builder, one-click questions, a SQL editor, charts and CSV download, with the query kept in a shareable link.
 
-No demographic data is used anywhere; areas are compared only on prices, rents, sales and reported incidents. The public [data pipeline page](https://ryee-dao.github.io/realist/#/pipeline) replays the newest records the engine read on its latest run, with the verdict each got, and reports what each run read, kept and rejected and which quality checks it passed.
+No demographic data is used anywhere; areas are compared only on prices, rents, sales and reported incidents. The public [data pipeline page](https://ryandao.dev/realist/#/pipeline) replays the newest records the engine read on its latest run, with the verdict each got, and reports what each run read, kept and rejected and which quality checks it passed.
 
 It runs with no server and no database bill. A scheduled GitHub Actions job runs the engine, stores the results in this repository, and publishes a static site to GitHub Pages.
 
@@ -124,6 +124,8 @@ Under the output directory (default `web/public/data`):
 - `<city>/harvest-state.json` holds the rotation and back-off state.
 
 Listings are dated within seven city-local calendar days. Rows include the original property URL, address, list date, asking price, and a `photos` array of publisher-hosted image URLs. `description` holds text from the property page when available, and `summary` can hold a search-card summary. Where the publisher's page data includes them, rows also have `beds`, `baths`, `sqft`, `type` (the publisher's own label), `lat`, `lon` and `zip`. `detailAt` records when the property page was read. By default, each run reads up to 20 additional property pages per city for descriptions and full galleries (`--details`). Details already fetched for the same list date and price are reused, and refreshed after 12 hours.
+
+On hosted scout runs, if the regular publishers yield no complete successful read, the collector can try one public Trulia results page in stock Chrome. It uses a temporary profile, observes the Trulia cooldown and attempts at most once per city per day. A usable result requires dated, priced listings. Local runs can enable this with `REALIST_BROWSER_FALLBACK=1`.
 
 The **Harvest live listings** Actions workflow runs on demand and on four schedules a day: 00:23, 12:23, 16:23 and 20:23 UTC. GitHub can delay scheduled runs. The Actions cache carries the output directory between runs. The downloadable `live-listings` artifact includes every snapshot, the merged files and the state. The daily site build copies the latest city snapshots. If the cache is empty, the build reads one publisher per city itself. A city that still has no snapshot shows the unavailable state.
 
