@@ -29,9 +29,6 @@ jobs:
   run:
     runs-on: ubuntu-latest
     timeout-minutes: 90
-    environment:
-      name: github-pages
-      url: ${{ steps.deploy.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
 
@@ -125,5 +122,16 @@ jobs:
       - uses: actions/upload-pages-artifact@v3
         with:
           path: web/dist
+
+  # Deploys in its own job: the site artifact is only reliably visible to the deploy step once the job that
+  # uploaded it has finished.
+  deploy:
+    needs: run
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
       - id: deploy
         uses: actions/deploy-pages@v4
