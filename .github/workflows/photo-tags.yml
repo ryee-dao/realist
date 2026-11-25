@@ -11,13 +11,18 @@ name: Photo tags
 # secret (preferred) or an OpenAI API key in CODEX_API_KEY. The login file lives only in a CODEX_HOME under
 # RUNNER_TEMP, is never cached, uploaded, committed or printed, and is deleted at the end. Codex may refresh its
 # tokens during a run; a refreshed file is written back to the CODEX_AUTH_JSON secret with the CODEX_SECRET_WRITER
-# token (a fine-grained PAT with this repository's "Secrets: read and write"). Only schedule and manual triggers,
+# token (a fine-grained PAT with this repository's "Secrets: read and write"). Only schedule, manual and after-harvest triggers,
 # and one run at a time (concurrency below), so a single login file is used by one serialized job stream.
 on:
   schedule:
     - cron: "41 */2 * * *"     # twelve a day, at :41 past every even hour UTC, so new homes are tagged soon after a harvest
                                # (listings.yml runs at :23). A run with nothing new ends in a few minutes; the usage marks above
                                # still slow or stop it, and runs never overlap (concurrency below).
+  # Also right after every listings harvest, so new homes are tagged without waiting for the timer (GitHub
+  # sometimes skips scheduled runs; .github/workflows/watchdog.yml restarts those).
+  workflow_run:
+    workflows: ["Harvest live listings"]
+    types: [completed]
   workflow_dispatch:
     inputs:
       limit:
@@ -37,6 +42,8 @@ concurrency:
 
 jobs:
   check:
+    # a harvest that failed brought nothing new to tag
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     permissions: {}
     outputs:

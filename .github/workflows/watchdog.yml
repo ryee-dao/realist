@@ -1,0 +1,35 @@
+name: Schedule watchdog
+
+# GitHub skips or delays scheduled runs without notice. This checks, many times a day, that the listings harvest,
+# the photo tagging and the daily data pipeline each ran for their latest slot, and starts any that were skipped or
+# that failed (.github/scripts/watchdog.py: 30 minutes' grace, at most 3 runs per slot).
+# It is itself on a timer, so it has several chances an hour and also runs whenever one of the three finishes.
+on:
+  schedule:
+    - cron: "7,22,37,52 * * * *"
+  workflow_run:
+    workflows: ["Harvest live listings", "Photo tags", "Data pipeline"]
+    types: [completed]
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: watchdog
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: write     # read the run lists and start a skipped workflow
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262   # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Start anything that was skipped
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 .github/scripts/watchdog.py

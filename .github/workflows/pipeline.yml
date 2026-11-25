@@ -15,10 +15,11 @@ on:
   push:
     branches: [main]
     paths: ["engine/**", "web/**", ".github/workflows/pipeline.yml"]
-  # After each listings harvest (four a day) the site is rebuilt so new homes show up the same day. These runs
-  # do not contact the cities' record systems again: they rebuild from the stored records (see the harvest step).
+  # After each listings harvest (four a day) and each photo tagging run the site is rebuilt, so new homes and their
+  # photo findings show up the same day. These runs do not contact the cities' record systems again: they rebuild
+  # from the stored records (see the harvest step).
   workflow_run:
-    workflows: ["Harvest live listings"]
+    workflows: ["Harvest live listings", "Photo tags"]
     types: [completed]
 
 permissions: {}      # each job below asks only for what it needs
@@ -29,7 +30,7 @@ concurrency:
 
 jobs:
   run:
-    # a harvest that failed has nothing new to publish
+    # a harvest or tagging run that failed has nothing new to publish
     if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 90
@@ -69,7 +70,7 @@ jobs:
           EVENT: ${{ github.event_name }}
         run: |
           if [ "$EVENT" = "workflow_run" ]; then
-            # started by a listings harvest: rebuild from the store without fetching public records again
+            # started by a listings harvest or a tagging run: rebuild from the store without fetching public records again
             python -m engine build
             exit
           fi
