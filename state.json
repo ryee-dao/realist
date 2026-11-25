@@ -28,7 +28,7 @@
   "sales_updated_at": 1794745762
  },
  "nyc": {
-  "acris_reach": "2026-09-30",
+  "acris_reach": "2026-10-31",
   "acris_updated_at": 1794332294,
   "annual_max_date": "2025-12-31",
   "annual_updated_at": 1781030005,
@@ -38,7 +38,7 @@
   "census_rents_version": "2024|Thu, 29 Jan 2026 13:13:09 GMT",
   "census_rents_year": 2024,
   "crime_through": "2026-09",
-  "finance_max_date": "2026-09-30",
+  "finance_max_date": "2026-10-31",
   "last_pull": {
    "Annualized sales (complete years)": {
     "date": "2026-11-24",
@@ -51,28 +51,25 @@
     }
    },
    "Recent deeds (ACRIS)": {
-    "date": "2026-11-24",
-    "fetched": 1347,
-    "kept": 1111,
-    "rejected": {
-     "deed covers several lots": 58,
-     "not a house or residential condo unit": 178
-    }
+    "date": "2026-11-25",
+    "fetched": 0,
+    "kept": 0,
+    "rejected": {}
    },
    "Rolling sales (latest 12 months)": {
-    "date": "2026-11-24",
-    "fetched": 60642,
-    "kept": 33795,
+    "date": "2026-11-25",
+    "fetched": 68523,
+    "kept": 38137,
     "rejected": {
-     "nominal price (under $10,000)": 21651,
-     "not a residential home type": 5141,
-     "price above $100M": 55
+     "nominal price (under $10,000)": 24614,
+     "not a residential home type": 5716,
+     "price above $100M": 56
     }
    }
   },
   "listings_month": "2026-10",
   "listings_version": "\"23aaa42cc31a4e5ad3db7717ba303631-2\"|\"e795960810e15d5790b1e7ccafca2a84\"|\"2cf572912c92a51f745e4f66554179ec\"|\"7673a88798f6894e355d447fc8e63c41-2\"",
-  "rolling_updated_at": 1792079407,
+  "rolling_updated_at": 1795635328,
   "safmr_checked": "2026-11-24",
   "safmr_year": "2027"
  },

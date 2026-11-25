@@ -1,0 +1,497 @@
+{
+ "city": "nyc",
+ "kind": "read",
+ "readAt": "2026-11-25T22:32:05+00:00",
+ "runId": "20261125T223134Z",
+ "samples": [
+  {
+   "readAt": "2026-11-25T22:32:05+00:00",
+   "records": [
+    {
+     "address": "150 22 Street",
+     "date": "2026-10-31",
+     "kind": "Commercial Vacant Land",
+     "price": 0,
+     "reason": "nominal price (under $10,000)",
+     "verdict": "reject"
+    },
+    {
+     "address": "148 22 Street",
+     "date": "2026-10-31",
+     "kind": "Warehouses",
+     "price": 0,
+     "reason": "nominal price (under $10,000)",
+     "verdict": "reject"
+    },
+    {
+     "address": "146 22 Street",
+     "date": "2026-10-31",
+     "kind": "Two Family Dwellings",
+     "price": 0,
+     "reason": "nominal price (under $10,000)",
+     "verdict": "reject"
+    },
+    {
+     "address": "831 Avenue Z",
+     "date": "2026-10-31",
+     "kind": "Two Family Dwellings",
+     "price": 0,
+     "reason": "nominal price (under $10,000)",
+     "verdict": "reject"
+    },
+    {
+     "address": "88-37 88th Street",
+     "date": "2026-10-30",
+     "kind": "Single family",
+     "price": 740000,
+     "reason": null,
+     "verdict": "keep"
+    },
+    {
+     "address": "112-40 175th Place",
+     "date": "2026-10-30",
+     "kind": "One Family Dwellings",
+     "price": 0,
+     "reason": "nominal price (under $10,000)",
+     "verdict": "reject"
+    },
+    {
+     "address": "116-34 140 Street",
+     "date": "2026-10-30",
+     "kind": "Single family",
+     "price": 835000,
+     "reason": null,
+     "verdict": "keep"
+    },
+    {
+     "address": "147-16 223rd St",
+     "date": "2026-10-30",
+     "kind": "Two Family Dwellings",
+     "price": 0,
+     "reason": "nominal price (under $10,000)",
+     "verdict": "reject"
+    },
+    {
+     "address": "130 Beach 121st Street, 1G",
+     "date": "2026-10-30",
+     "kind": "Co-op",
+     "price": 230000,
+     "reason": null,
+     "verdict": "keep"
+    },
+    {
+     "address": "95-24 127 St",
+     "date": "2026-10-30",
+     "kind": "One Family Dwellings",
+     "price": 10,
+     "reason": "nominal price (under $10,000)",
+     "verdict": "reject"
+    },
+    {
+     "address": "65-18 Austin Street, 2B",
+     "date": "2026-10-30",
+     "kind": "Condo",
+     "price": 632000,
+     "reason": null,
+     "verdict": "keep"
+    },
+    {
+     "address": "73-15 Cook Ave",
+     "date": "2026-10-30",
+     "kind": "Single family",
+     "price": 710000,
+     "reason": null,
+     "verdict": "keep"
+    },
+    {
+     "address": "37-25 12 Street",
+     "date": "2026-10-30",
+     "kind": "Other Hotels",
+     "price": 12400000,
+     "reason": "not a residential home type",
+     "verdict": "reject"
+    },
+    {
+     "address": "31-49 75 Street",
+     "date": "2026-10-30",
+     "kind": "One Family Dwellings",
+     "price": 0,
+     "reason": "nominal price (under $10,000)",
+     "verdict": "reject"
+    },
+    {
+     "address": "182-36 Hillside Avenue",
+     "date": "2026-10-30",
+     "kind": "Two Family Dwellings",
+     "price": 0,
+     "reason": "nominal price (under $10,000)",
+     "verdict": "reject"
+    },
+    {
+     "address": "182-34 Hillside Avenue",
+     "date": "2026-10-30",
+     "kind": "Two Family Dwellings",
+     "price": 0,
+     "reason": "nominal price (under $10,000)",
+     "verdict": "reject"
+    },
+    {
+     "address": "150-32 59 Avenue",
+     "date": "2026-10-30",
+     "kind": "Multi-family",
+     "price": 1268000,
+     "reason": null,
+     "verdict": "keep"
+    },
+    {
+     "address": "13905 85th Drive, 6E",
+     "date": "2026-10-30",
+     "kind": "Co-op",
+     "price": 262000,
+     "reason": null,
+     "verdict": "keep"
+    },
+    {
+     "address": "1505 Emmons Avenue",
+     "date": "2026-10-30",
+     "kind": "Tax Class 1 Vacant Land",
+     "price": 0,
+     "reason": "nominal price (under $10,000)",
+     "verdict": "reject"
+    },
+    {
+     "address": "168 Sterling Place, 4L",
+     "date": "2026-10-30",
+     "kind": "Condo",
+     "price": 1953000,
+     "reason": null,
+     "verdict": "keep"
+    },
+    {
+     "address": "5621 Avenue N",
+     "date": "2026-10-30",
+     "kind": "One Family Dwellings",
+     "price": 0,
+     "reason": "nominal price (under $10,000)",
+     "verdict": "reject"
+    },
+    {
+     "address": "692 East 7 Street",
+     "date": "2026-10-30",
+     "kind": "Two Family Dwellings",
+     "price": 0,
+     "reason": "nominal price (under $10,000)",
+     "verdict": "reject"
+    },
+    {
+     "address": "2280 Burnett Street, 1C",
+     "date": "2026-10-30",
+     "kind": "Coops - Elevator Apartments",
+     "price": 0,
+     "reason": "nominal price (under $10,000)",
+     "verdict": "reject"
+    },
+    {
+     "address": "3217 Avenue S",
+     "date": "2026-10-30",
+     "kind": "Single family",
+     "price": 749000,
+     "reason": null,
+     "verdict": "keep"
+    },
+    {
+     "address": "1900 Quentin Road, A17",
+     "date": "2026-10-30",
+     "kind": "Coops - Elevator Apartments",
+     "price": 0,
+     "reason": "nominal price (under $10,000)",
+     "verdict": "reject"
+    },
+    {
+     "address": "2989 Avenue S",
+     "date": "2026-10-30",
+     "kind": "One Family Dwellings",
+     "price": 0,
+     "reason": "nominal price (under $10,000)",
+     "verdict": "reject"
+    },
+    {
+     "address": "2802 Cortelyou Road",
+     "date": "2026-10-30",
+     "kind": "Multi-family",
+     "price": 979000,
+     "reason": null,
+     "verdict": "keep"
+    },
+    {
+     "address": "460 East 22 Street",
+     "date": "2026-10-30",
+     "kind": "Single family",
+     "price": 2750000,
+     "reason": null,
+     "verdict": "keep"
+    },
+    {
+     "address": "89 Weldon Street",
+     "date": "2026-10-30",
+     "kind": "Two Family Dwellings",
+     "price": 0,
+     "reason": "nominal price (under $10,000)",
+     "verdict": "reject"
+    },
+    {
+     "address": "982 79th Street",
+     "date": "2026-10-30",
+     "kind": "One Family Dwellings",
+     "price": 0,
+     "reason": "nominal price (under $10,000)",
+     "verdict": "reject"
+    },
+    {
+     "address": "176 Johnson Street, 4A",
+     "date": "2026-10-30",
+     "kind": "Condo",
+     "price": 1087500,
+     "reason": null,
+     "verdict": "keep"
+    },
+    {
+     "address": "1448 Bedford Avenue, 4A",
+     "date": "2026-10-30",
+     "kind": "Condo",
+     "price": 715000,
+     "reason": null,
+     "verdict": "keep"
+    },
+    {
+     "address": "629 Classon Avenue",
+     "date": "2026-10-30",
+     "kind": "Multi-family",
+     "price": 2850000,
+     "reason": null,
+     "verdict": "keep"
+    },
+    {
+     "address": "372 Crown Street",
+     "date": "2026-10-30",
+     "kind": "One Family Dwellings",
+     "price": 0,
+     "reason": "nominal price (under $10,000)",
+     "verdict": "reject"
+    },
+    {
+     "address": "794 Hart Street, 2B",
+     "date": "2026-10-30",
+     "kind": "Condo",
+     "price": 732500,
+     "reason": null,
+     "verdict": "keep"
+    },
+    {
+     "address": "54-23 17 Avenue",
+     "date": "2026-10-30",
+     "kind": "Two Family Dwellings",
+     "price": 0,
+     "reason": "nominal price (under $10,000)",
+     "verdict": "reject"
+    },
+    {
+     "address": "7120 17 Avenue",
+     "date": "2026-10-30",
+     "kind": "One Family Dwellings",
+     "price": 0,
+     "reason": "nominal price (under $10,000)",
+     "verdict": "reject"
+    },
+    {
+     "address": "83 Stuyvesant Avenue, 1B",
+     "date": "2026-10-30",
+     "kind": "Condos - Walkup Apartments",
+     "price": 0,
+     "reason": "nominal price (under $10,000)",
+     "verdict": "reject"
+    },
+    {
+     "address": "875A Greene Avenue",
+     "date": "2026-10-30",
+     "kind": "Multi-family",
+     "price": 750000,
+     "reason": null,
+     "verdict": "keep"
+    },
+    {
+     "address": "263 Bay Ridge Avenue",
+     "date": "2026-10-30",
+     "kind": "Rentals - Walkup Apartments",
+     "price": 730000,
+     "reason": "not a residential home type",
+     "verdict": "reject"
+    },
+    {
+     "address": "652 88th Street",
+     "date": "2026-10-30",
+     "kind": "Single family",
+     "price": 1130000,
+     "reason": null,
+     "verdict": "keep"
+    },
+    {
+     "address": "740 East 218 Street",
+     "date": "2026-10-30",
+     "kind": "Single family",
+     "price": 383250,
+     "reason": null,
+     "verdict": "keep"
+    },
+    {
+     "address": "951-955 Soundview Avenue",
+     "date": "2026-10-30",
+     "kind": "Commercial Garages",
+     "price": 950000,
+     "reason": "not a residential home type",
+     "verdict": "reject"
+    },
+    {
+     "address": "1451 Edison Avenue",
+     "date": "2026-10-30",
+     "kind": "Rentals - Walkup Apartments",
+     "price": 950000,
+     "reason": "not a residential home type",
+     "verdict": "reject"
+    },
+    {
+     "address": "2895 Dudley Avenue",
+     "date": "2026-10-30",
+     "kind": "Tax Class 1 - Other",
+     "price": 950000,
+     "reason": "not a residential home type",
+     "verdict": "reject"
+    },
+    {
+     "address": "2492 Delanoy Avenue",
+     "date": "2026-10-30",
+     "kind": "Multi-family",
+     "price": 809509,
+     "reason": null,
+     "verdict": "keep"
+    },
+    {
+     "address": "2312 Demeyer Street",
+     "date": "2026-10-30",
+     "kind": "Two Family Dwellings",
+     "price": 0,
+     "reason": "nominal price (under $10,000)",
+     "verdict": "reject"
+    },
+    {
+     "address": "1535 Hawthorne Street",
+     "date": "2026-10-30",
+     "kind": "One Family Dwellings",
+     "price": 0,
+     "reason": "nominal price (under $10,000)",
+     "verdict": "reject"
+    },
+    {
+     "address": "4445 Post Road, 6J",
+     "date": "2026-10-30",
+     "kind": "Coops - Elevator Apartments",
+     "price": 0,
+     "reason": "nominal price (under $10,000)",
+     "verdict": "reject"
+    },
+    {
+     "address": "4081 Grace Avenue",
+     "date": "2026-10-30",
+     "kind": "Single family",
+     "price": 750000,
+     "reason": null,
+     "verdict": "keep"
+    },
+    {
+     "address": "3942 Wilder Avenue",
+     "date": "2026-10-30",
+     "kind": "One Family Dwellings",
+     "price": 100,
+     "reason": "nominal price (under $10,000)",
+     "verdict": "reject"
+    },
+    {
+     "address": "100 Overlook Terrace, 219",
+     "date": "2026-10-30",
+     "kind": "Co-op",
+     "price": 900000,
+     "reason": null,
+     "verdict": "keep"
+    },
+    {
+     "address": "170 East 87 Street, E7F",
+     "date": "2026-10-30",
+     "kind": "Condo",
+     "price": 750000,
+     "reason": null,
+     "verdict": "keep"
+    },
+    {
+     "address": "304 East 81 Street",
+     "date": "2026-10-30",
+     "kind": "Rentals - Walkup Apartments",
+     "price": 8000000,
+     "reason": "not a residential home type",
+     "verdict": "reject"
+    },
+    {
+     "address": "1560 2 Avenue",
+     "date": "2026-10-30",
+     "kind": "Rentals - Walkup Apartments",
+     "price": 8000000,
+     "reason": "not a residential home type",
+     "verdict": "reject"
+    },
+    {
+     "address": "255 East 77th Street, Phe",
+     "date": "2026-10-30",
+     "kind": "Condo",
+     "price": 21500000,
+     "reason": null,
+     "verdict": "keep"
+    },
+    {
+     "address": "200 East 66 Street, D0202",
+     "date": "2026-10-30",
+     "kind": "Condo",
+     "price": 2300000,
+     "reason": null,
+     "verdict": "keep"
+    },
+    {
+     "address": "301 East 63rd Street, 2K",
+     "date": "2026-10-30",
+     "kind": "Co-op",
+     "price": 300000,
+     "reason": null,
+     "verdict": "keep"
+    },
+    {
+     "address": "213 East 62 Street",
+     "date": "2026-10-30",
+     "kind": "Single family",
+     "price": 7000000,
+     "reason": null,
+     "verdict": "keep"
+    },
+    {
+     "address": "81 Spring Street, 4",
+     "date": "2026-10-30",
+     "kind": "Condo",
+     "price": 13500000,
+     "reason": null,
+     "verdict": "keep"
+    }
+   ],
+   "source": "Rolling sales (latest 12 months)"
+  }
+ ],
+ "sources": [
+  "Rolling sales (latest 12 months)"
+ ]
+}
