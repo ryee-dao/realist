@@ -31,6 +31,18 @@
 .term-ok { color: var(--good-ink); font-weight: 600; }
 .term-err { color: var(--bad); font-weight: 600; }
 .term-line.cursor { color: var(--brand); display: block; }
+.term-line.lst { grid-template-columns: 86px 58px 96px minmax(0, 1fr) minmax(0, 1.2fr); }
+.term-line small { font-size: 10.5px; color: var(--muted); }
+.term-line.warn b { color: var(--warn-ink); }
+.warn-mark { display: inline-grid; place-items: center; width: 14px; height: 14px; margin-right: 5px; border-radius: 50%; background: var(--warn); color: #1a1400; font: 800 10px/1 var(--font); font-style: normal; vertical-align: 1px; }
+.term > .segmented { align-self: flex-start; max-width: 100%; margin-bottom: 10px; }
+.pubs { list-style: none; margin: 0 0 8px; padding: 0; display: flex; flex-wrap: wrap; gap: 3px 14px; font-size: 12.5px; color: var(--text-2); }
+.pubs li { display: inline-flex; gap: 6px; align-items: baseline; white-space: nowrap; }
+.pubs b { font-weight: 600; color: var(--text); }
+.pubs .ok-mark { color: var(--good-ink); font: 500 11.5px var(--mono); }
+.pubs li.off, .pubs li.off b { color: var(--muted); font-weight: 500; }
+.pubs li.warn span { color: var(--text-2); white-space: normal; }
+.pubs li.lbl { color: var(--muted); }
 .term-foot { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding: 7px 14px; border-top: 1px solid var(--line); font: 500 11px var(--mono); color: var(--muted); background: var(--surface-2); }
 .term-foot span:first-child { color: var(--text-2); }
 
@@ -118,6 +130,16 @@
 @media (max-width: 600px) {
   .term-line { grid-template-columns: 78px 50px 78px minmax(0, 1fr); gap: 8px; font-size: 11.5px; }
   .term-line .term-addr { display: none; }
+  .term > .segmented { display: flex; width: 100%; }
+  .term-line.cmd { white-space: normal; }
+  .term-line .term-type { display: none; }
+  .term-line.lst { grid-template-columns: 40px 34px 72px minmax(0, 1fr); }
+  .term-line.lst .yr { display: none; }
+  /* listings on a phone: the address matters more than "new" / "merged"; only warnings keep their reason */
+  .term-line.lst { grid-template-columns: 40px 34px 68px minmax(0, 1fr) auto; }
+  .term-line.lst .term-addr { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .term-line.lst em.plain { display: none; }
+  .term > .segmented > button { flex: 1; padding-inline: 6px; }
   .ring { width: 88px; height: 88px; }
   .ring.big { width: 76px; height: 76px; }
   .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }

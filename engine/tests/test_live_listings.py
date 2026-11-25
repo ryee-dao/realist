@@ -289,6 +289,96 @@ class MergeTests(unittest.TestCase):
         self.assertNotEqual(feed.home_key("12 Elm St, Chicago, IL 60614"), feed.home_key("12 Elm St, Chicago, IL 60640"))
         self.assertIsNone(feed.home_key("Lot 5 Main St"))
 
+    def test_ranges_stray_zeros_and_repeated_directions(self):
+        same = [("743-747 S  Mildred St, Philadelphia, PA 19147", "743 S Mildred Street, Philadelphia, PA 19147"),
+                ("1906 E Allegheny Ave E Philadelphia, PA 19134", "1906 E  Allegheny Ave, Philadelphia, PA 19134"),
+                ("2001 Hamilton St #-1516, Philadelphia, PA 19130", "2001 00 Hamilton St #1516 Philadelphia, PA 19130"),
+                ("84-27 Parsons Blvd, Queens, NY 11432", "8427 Parsons Boulevard, Jamaica, NY 11432"),
+                ("121-61 Flatlands Avenue #3CC, Brooklyn, NY 11207", "12161 Flatlands Ave Unit 3cc, Brooklyn, NY 11207")]
+        for a, b in same:
+            self.assertEqual(feed.home_key(a), feed.home_key(b), (a, b))
+        self.assertEqual(feed.home_key("743-747 S Mildred St Philadelphia, PA 19147"), "743 S MILDRED ST 19147")
+        self.assertEqual(feed.home_key("84-27 Parsons Blvd, Queens, NY 11432"), "8427 PARSONS BLVD 11432")
+        self.assertEqual(feed.home_key("20-26 N Moore St #4W New York, NY 10013"), "20 N MOORE ST #4W 10013")  # a Manhattan range
+        self.assertEqual(feed.home_key("100 W Main St E, Chicago, IL 60601"), "100 W MAIN ST E 60601")  # a different direction stays
+        # the key itself never ignores the suffix: Belmar Ter and Belmar St can be two streets
+        self.assertNotEqual(feed.home_key("5502 Belmar Ter, Philadelphia, PA 19143"), feed.home_key("5502 Belmar Street, Philadelphia, PA 19143"))
+        self.assertEqual(feed.street_core("5502 Belmar Ter, Philadelphia, PA 19143"), feed.street_core("5502 Belmar Street, Philadelphia, PA 19143"))
+
+    def test_same_home_needs_one_price_near_coordinates_and_no_conflicting_publisher(self):
+        a = {"price": 200000, "lat": 39.9399, "lon": -75.2260, "sources": [{"provider": "movoto", "url": "m1", "price": 200000}]}
+        self.assertTrue(feed.same_home(a, dict(a, sources=[{"provider": "everyhome", "url": "e1", "price": 200000}])))
+        self.assertFalse(feed.same_home(a, dict(a, price=215000)))
+        self.assertFalse(feed.same_home(a, dict(a, lat=39.9490)))   # about 1 km north
+        self.assertTrue(feed.same_home(a, {"price": 200000, "sources": []}))   # no coordinates to compare
+        # Movoto lists the other address under another link at another price: two homes
+        self.assertFalse(feed.same_home(a, dict(a, sources=[{"provider": "movoto", "url": "m2", "price": 180000},
+                                                            {"provider": "everyhome", "url": "e1", "price": 200000}])))
+
+    def test_suffix_variants_are_one_home_at_one_price(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+
+            def snapshot(provider, rows):
+                feed.write_snapshot(root / "sources" / provider / "philadelphia" / "new-listings.json",
+                                    {"status": "ready", "source": provider, "asOf": self.now.isoformat(), "rows": rows})
+
+            near = {"lat": 39.9399, "lon": -75.2260}
+            snapshot("movoto", [
+                home("https://movoto/1", price=189000, address="5502 Belmar Ter Philadelphia, PA 19143", photos=["m1"], **near),
+                home("https://movoto/2", price=125000, address="5501 Litchfield St Philadelphia, PA 19143"),
+                home("https://movoto/3", price=300000, address="12 Elm St Philadelphia, PA 19143"),
+                home("https://movoto/4", price=400000, address="9 Oak St Philadelphia, PA 19143", lat=39.9399, lon=-75.2260)])
+            snapshot("everyhome", [
+                home("https://everyhome/1", price=189000, address="5502 Belmar Street, Philadelphia, PA 19143", photos=["e1", "e2"], **near),
+                home("https://everyhome/2", price=125000, address="5501 Litchfield Ave, Philadelphia, PA 19143"),
+                home("https://everyhome/3", price=310000, address="12 Elm Ave, Philadelphia, PA 19143"),    # another price
+                home("https://everyhome/4", price=400000, address="9 Oak Ter, Philadelphia, PA 19143", lat=39.9490, lon=-75.2260)])
+            merged = feed.merge_city(root, "philadelphia", self.now)
+        by = {r["key"]: r for r in merged["rows"]}
+        self.assertEqual(merged["homes"], 6)
+        self.assertEqual(set(by), {"5502 BELMAR ST 19143", "5501 LITCHFIELD AVE 19143", "12 ELM ST 19143", "12 ELM AVE 19143",
+                                   "9 OAK ST 19143", "9 OAK TER 19143"})
+        belmar = by["5502 BELMAR ST 19143"]
+        self.assertEqual({e["url"] for e in belmar["sources"]}, {"https://movoto/1", "https://everyhome/1"})
+        self.assertEqual(belmar["photos"], ["e1", "e2"])
+        self.assertEqual(len(by["5501 LITCHFIELD AVE 19143"]["sources"]), 2)
+
+    def test_stored_rows_under_old_keys_heal(self):
+        stored = [
+            {"key": "743747 S MILDRED ST 19147", "url": "https://movoto/747", "address": "743-747 S Mildred St Philadelphia, PA 19147",
+             "date": "2026-11-18", "price": 750000, "firstSeen": "2026-11-18T01:00:00+00:00", "lastSeen": "2026-11-20T01:00:00+00:00",
+             "sources": [{"provider": "movoto", "url": "https://movoto/747", "price": 750000, "asOf": "2026-11-20T01:00:00+00:00",
+                          "address": "743-747 S Mildred St Philadelphia, PA 19147"}]},
+            {"key": "743 S MILDRED ST 19147", "url": "https://everyhome/743", "address": "743 S Mildred Street, Philadelphia, PA 19147",
+             "date": "2026-11-19", "price": 750000, "firstSeen": "2026-11-19T01:00:00+00:00", "lastSeen": "2026-11-22T01:00:00+00:00",
+             "sources": [{"provider": "everyhome", "url": "https://everyhome/743", "price": 750000, "asOf": "2026-11-22T01:00:00+00:00"}]},
+            {"key": "5502 BELMAR TER 19143", "url": "https://movoto/b", "address": "5502 Belmar Ter Philadelphia, PA 19143",
+             "date": "2026-11-20", "price": 189000, "zip": "19143", "sources": [{"provider": "movoto", "url": "https://movoto/b", "price": 189000}]},
+            {"key": "5502 BELMAR ST 19143", "url": "https://everyhome/b", "address": "5502 Belmar Street, Philadelphia, PA 19143",
+             "date": "2026-11-21", "price": 189000, "zip": "19143", "sources": [{"provider": "everyhome", "url": "https://everyhome/b", "price": 189000}]},
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            feed.write_snapshot(root / "philadelphia" / "listings.json", {"status": "ready", "rows": stored})
+            merged = feed.merge_city(root, "philadelphia", self.now)   # nothing read this week: stored rows alone
+            self.assertEqual(merged["homes"], 2)
+            mildred, = [r for r in merged["rows"] if "MILDRED" in r["key"]]
+            self.assertEqual(mildred["key"], "743 S MILDRED ST 19147")
+            self.assertEqual({e["url"] for e in mildred["sources"]}, {"https://movoto/747", "https://everyhome/743"})
+            self.assertEqual((mildred["date"], mildred["firstSeen"], mildred["lastSeen"]),
+                             ("2026-11-18", "2026-11-18T01:00:00+00:00", "2026-11-22T01:00:00+00:00"))
+            belmar, = [r for r in merged["rows"] if "BELMAR" in r["key"]]
+            self.assertEqual(len(belmar["sources"]), 2)
+            # a fresh read of the old-key row is matched to it by URL and keeps its history
+            feed.write_snapshot(root / "philadelphia" / "listings.json", {"status": "ready", "rows": stored[:1]})
+            feed.write_snapshot(root / "sources" / "movoto" / "philadelphia" / "new-listings.json", {"status": "ready", "source": "Movoto",
+                "asOf": self.now.isoformat(), "rows": [home("https://movoto/747", "2026-11-18", 750000, "743-747 S Mildred St Philadelphia, PA 19147")]})
+            merged = feed.merge_city(root, "philadelphia", self.now)
+        row, = merged["rows"]
+        self.assertEqual((row["key"], row["firstSeen"], row["lastSeen"]),
+                         ("743 S MILDRED ST 19147", "2026-11-18T01:00:00+00:00", self.now.isoformat()))
+
     def test_merge_reads_every_publishers_latest_snapshot(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

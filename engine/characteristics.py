@@ -10,7 +10,8 @@ Philadelphia: the Office of Property Assessment's `opa_properties_public` table 
 residential parcels (single and multi family) are read, and only parcels that appear in the stored sales are kept, so
 the lookup stays small. Owner and mailing fields are never requested. The listing cards (engine/listing_cards.py)
 also look up the record of a listed home that has not sold within the stored sales, by its street address
-(phl_records_by_location), so the model can price it from the same fields.
+(phl_records_by_location), so the model can price it from the same fields, and the parcel's position for a listing
+whose publisher gave no coordinates.
 """
 import datetime as dt
 import math
@@ -74,11 +75,17 @@ def phl_record(row):
 
 # ---- property records by street address (listings whose home has not sold within the stored sales) ---------------
 
+# Every category is read: single and multi family parcels carry the record the model prices (condos are single family
+# parcels with a condo building description), any other parcel (mixed use, vacant land, apartments...) only its
+# position, for a map pin. the_geom is the parcel's point in WGS84 (SRID 4326, checked against the live table).
 PHL_BY_LOCATION_SQL = " ".join(("""
-select parcel_number p, location loc, unit, zip_code zip, category_code_description cat, """ + PHL_FIELDS + """
+select parcel_number p, location loc, unit, zip_code zip, category_code_description cat,
+       ST_Y(the_geom) lat, ST_X(the_geom) lng, """ + PHL_FIELDS + """
 from opa_properties_public
-where category_code_description in ('SINGLE FAMILY', 'MULTI FAMILY') and location in ({locations})
+where location in ({locations})
 """).split())
+PHL_RESIDENTIAL = {"SINGLE FAMILY": SINGLE, "MULTI FAMILY": MULTI}
+PHL_BOUNDS = (39.86, 40.14, -75.29, -74.95)   # south, north, west, east: the city boundary's extent, a little padded
 PHL_LOCATION_OK = re.compile(r"[0-9]+[A-Z]? [0-9A-Z][0-9A-Z ]{0,58}")   # what phl_location builds; nothing else is sent
 PHL_LOCATION_CHUNK = 100       # addresses per query: ~3 kB of URL, well inside Carto's limits
 
@@ -100,12 +107,14 @@ def phl_location(key):
 
 
 def phl_records_by_location(client, locations):
-    """Current OPA property records for exact street addresses, single and multi family only, one Carto query.
+    """Current OPA parcels at exact street addresses, one Carto query.
 
-    Returns [{"p", "location", "unit", "zip", "type", "rec"}] where rec is a lookup row as harvest_philadelphia writes
-    it and type is "Single family", "Multi-family" or "Condo" (single family with a condo building description, as
-    engine/sources/philadelphia.py classifies sales; the model is fitted without condos). Owner and mailing fields are
-    never requested. Raises ValueError for a location outside PHL_LOCATION_OK, FetchError on a bad response."""
+    Returns [{"p", "location", "unit", "zip", "lat", "lon", "type", "rec"}]. lat/lon are the parcel's point (absent when
+    the table has none). For a single or multi family parcel, rec is a lookup row as harvest_philadelphia writes it and
+    type is "Single family", "Multi-family" or "Condo" (single family with a condo building description, as
+    engine/sources/philadelphia.py classifies sales; the model is fitted without condos); any other parcel has neither
+    (type None): only its position is used. Owner and mailing fields are never requested. Raises ValueError for a
+    location outside PHL_LOCATION_OK, FetchError on a bad response."""
     locations = list(locations)
     if not locations or any(not isinstance(loc, str) or not PHL_LOCATION_OK.fullmatch(loc) for loc in locations):
         raise ValueError("refusing an address outside the allowed characters")
@@ -117,11 +126,16 @@ def phl_records_by_location(client, locations):
     for row in rows:
         if not isinstance(row, dict) or not row.get("p") or not row.get("loc"):
             continue
-        cat = str(row.get("cat") or "").upper()
+        cat = " ".join(str(row.get("cat") or "").upper().split())
         condo = "CONDO" in f"{row.get('bdesc') or ''} {row.get('bdesc_old') or ''}".upper()
-        out.append({"p": str(row["p"]), "location": " ".join(str(row["loc"]).upper().split()),
-                    "unit": str(row.get("unit") or "").strip(), "zip": str(row.get("zip") or "").strip()[:5],
-                    "type": MULTI if cat == "MULTI FAMILY" else CONDO if condo else SINGLE, "rec": phl_record(row)})
+        p = {"p": str(row["p"]), "location": " ".join(str(row["loc"]).upper().split()),
+             "unit": str(row.get("unit") or "").strip(), "zip": str(row.get("zip") or "").strip()[:5], "type": None}
+        lat, lon = row.get("lat"), row.get("lng")
+        if type(lat) in (int, float) and type(lon) in (int, float) and math.isfinite(lat) and math.isfinite(lon):
+            p.update(lat=round(lat, 6), lon=round(lon, 6))
+        if cat in PHL_RESIDENTIAL:
+            p.update(type=CONDO if cat == "SINGLE FAMILY" and condo else PHL_RESIDENTIAL[cat], rec=phl_record(row))
+        out.append(p)
     return out
 
 
@@ -318,7 +332,9 @@ CITIES = {
         "source": "Property characteristics", "dataset": "City of Philadelphia, OPA property records (opa_properties_public)",
         "harvest": harvest_philadelphia, "features": philadelphia_features, "spec": PHL_SPEC,
         # current listings whose home has not sold within the stored sales: its record, looked up by street address
+        # (and its position, for a listing whose publisher gave none)
         "by_address": {"location": phl_location, "fetch": phl_records_by_location, "chunk": PHL_LOCATION_CHUNK},
+        "bounds": PHL_BOUNDS,     # a position from the city's records outside this box is not used for a pin
         "jobs": [("Property characteristics", "City of Philadelphia, OPA property records (opa_properties_public)",
                   harvest_philadelphia),
                  ("Assessment history", "City of Philadelphia, OPA certified values by tax year (assessments)",

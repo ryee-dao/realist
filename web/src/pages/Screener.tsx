@@ -248,19 +248,12 @@ export default function ScreenerPage({ city, theme }: { city: City; theme: Theme
               </div>
               <div className="f-detail-score"><b>{sel.score}</b><span>#{sel.rank} of {scored.length}</span></div>
             </header>
-            {(() => {
-              const known = active.filter((f) => sel.pctl[f.id] != null)
-              const strong = [...known].sort((a, b) => (sel.pctl[b.id] as number) - (sel.pctl[a.id] as number)).slice(0, 2)
-              const weak = [...known].sort((a, b) => (sel.pctl[a.id] as number) - (sel.pctl[b.id] as number))[0]
-              return (
-                <div className="f-why">
-                  {strong.length > 0 && <span>Strongest: {strong.map((f) => `${f.short} ${gradeOf(sel.pctl[f.id])}`).join(', ')}</span>}
-                  {weak && !strong.includes(weak) && <span>Held back by: {weak.short} {gradeOf(sel.pctl[weak.id])}</span>}
-                  {sel.demoted && <span className="f-warn">Held out of S: weak on a heavily weighted factor</span>}
-                  {sel.missing.length > 0 && <span className="f-warn">Incomplete: no {sel.missing.map(short).join(', ')} data, counted at the city median</span>}
-                </div>
-              )
-            })()}
+            {(sel.demoted || sel.missing.length > 0) && (
+              <div className="f-why">
+                {sel.demoted && <span className="f-warn">Held out of S: weak on a heavily weighted factor</span>}
+                {sel.missing.length > 0 && <span className="f-warn">Incomplete: no {sel.missing.map(short).join(', ')} data, counted at the city median</span>}
+              </div>
+            )}
             <div className="f-facts">
               {FACTORS.map((f) => {
                 const on = w[f.id] > 0

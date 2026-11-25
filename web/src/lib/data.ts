@@ -102,6 +102,22 @@ export interface Status { generatedAt: string; last: Run | null; history: RunSum
 /** <city>/intake.json: the newest records the engine read on its last real pull, with the verdict each got. */
 export interface IntakeRecord { date: string; price: number | null; address: string; kind: string; verdict: 'keep' | 'reject'; reason: string | null; source: string }
 export interface Intake { city: string; kind: 'read' | 'stored'; runId: string | null; readAt: string | null; sources: string[]; records: IntakeRecord[] }
+/** <city>/listings-intake.json (engine/listings_intake.py): the newest homes the listing harvest took in, and what it
+ *  did with each. Prices are asking prices. */
+export type ListingTag = 'new' | 'merged' | 'price' | 'unseen' | 'off'
+export interface ListingIntakeRecord {
+  date: string | null; price: number | null; address: string | null; type: string | null; verdict: 'keep' | 'drop'; tag: ListingTag
+  reason: string; publishers: string[]; links: string[]; firstSeen?: string | null; lastSeen?: string | null; offAt?: string; was?: number
+}
+export interface ListingPublisher {
+  provider: string; name: string; readAt?: string; rows?: number; code?: number; until?: string
+  state: 'ok' | 'partial' | 'refused' | 'failed' | 'paused' | 'idle'
+}
+export interface ListingIntake {
+  city: string; kind: 'listings'; generatedAt: string; readAt: string | null; homes: number; seenThisWeek?: number; unseenDays: number
+  publishers: ListingPublisher[]; offMarket: { count: number; shown: number }; counts: Partial<Record<ListingTag, number>>
+  skipped?: { date?: number; price?: number }; records: ListingIntakeRecord[]
+}
 
 const cache = new Map<string, Promise<unknown>>()
 

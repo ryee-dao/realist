@@ -1,4 +1,5 @@
 """One enriched file per city for the New listings page: <city>/listing-cards.json. Standard library only.
+Also writes <city>/listings-intake.json for the pipeline page (engine/listings_intake.py).
 
     python3 -m engine.listing_cards                    every city under web/public/data
     python3 -m engine.listing_cards --city philadelphia --store store
@@ -14,7 +15,8 @@ queries per run, cached in the store as _lookups/<city>_address_records.json for
 - <city>/model-predictor.json (engine/model.py, optional): the price model's coefficients and backtest error;
 - the store (optional): the city's area boundaries, and the parcel records the model prices a home from.
 
-Each home is placed in an area with the boundary file (point in polygon) when it has coordinates and the city has
+Each home is placed in an area with the boundary file (point in polygon) when it has coordinates (the publisher's, else
+in Philadelphia its recorded sale's or parcel's, marked on the card as pinFrom "sale" / "parcel") and the city has
 one, otherwise with listing_analysis.AreaIndex (same address among recorded sales, nearest recorded sale, ZIP code).
 
 The headline number compares the asking price with one of, best first:
@@ -42,6 +44,7 @@ from tempfile import NamedTemporaryFile
 
 from .analytics import area_label
 from .cities import CITIES as CITY_CFG
+from . import listings_intake
 from .listing_analysis import AreaIndex, infer_type, normalize_address, text_of
 from .schema import MULTI, SINGLE
 
@@ -97,6 +100,58 @@ def write_json(path, data):
 
 def _num(v):
     return v if type(v) in (int, float) and math.isfinite(v) else None
+
+
+def _km(lat1, lon1, lat2, lon2):
+    return math.hypot(lat1 - lat2, (lon1 - lon2) * math.cos(math.radians(lat1))) * 111.2
+
+
+def _float(v):
+    try:
+        v = float(v)
+    except (TypeError, ValueError):
+        return None
+    return v if math.isfinite(v) else None
+
+
+def publisher_position(row):
+    """(lat, lon) the publisher gave, or (None, None)."""
+    lat, lon = _num(row.get("lat")), _num(row.get("lon"))
+    if lat is None or lon is None or not (-90 <= lat <= 90 and -180 <= lon <= 180):
+        return None, None
+    return lat, lon
+
+
+def _listing_zip(row):
+    return (row.get("zip") or (normalize_address(row.get("address"), "") or (None,) * 4)[3] or "")[:5]
+
+
+def sale_position(sale, zip_code, bounds):
+    """(lat, lon) of a matched recorded sale, when it has one inside `bounds` and the same ZIP as the listing."""
+    if not sale or not bounds:
+        return None
+    lat, lon = _float(sale.get("lat")), _float(sale.get("lon"))
+    if lat is None or lon is None or not (bounds[0] <= lat <= bounds[1] and bounds[2] <= lon <= bounds[3]):
+        return None
+    if zip_code and (sale.get("zip") or "")[:5] and sale["zip"][:5] != zip_code:
+        return None
+    return lat, lon
+
+
+def fallback_position(row, sale, ctx):
+    """A pin for a listing whose publisher gave no coordinates, best first: the matched recorded sale's position
+    ("sale"), then the parcel at the address in the city's property file ("parcel"). (lat, lon, source) or Nones."""
+    bounds = ctx.get("bounds")
+    if not bounds:
+        return None, None, None
+    zip_code = _listing_zip(row)
+    pos = sale_position(sale, zip_code, bounds)
+    if pos:
+        return pos[0], pos[1], "sale"
+    pos = ctx["addresses"].position(row.get("address"), zip_code, bounds) if ctx.get("addresses") else None
+    if pos:
+        return pos[0], pos[1], "parcel"
+    return None, None, None
 
 
 def _round_to(v, step):
@@ -176,6 +231,8 @@ def model_features(cfg, sale, record, today):
 
 
 ADDRESS_REFRESH_DAYS = 30      # a cached address lookup (found or not) is asked again after this many days
+ADDRESS_CACHE_VERSION = 2      # 2: parcels carry their position and every category; an older entry is asked again
+PIN_SPREAD_KM = 0.15           # parcels at one street address further apart than this give no pin (which one?)
 
 
 def address_cache_path(store, city):
@@ -185,20 +242,23 @@ def address_cache_path(store, city):
 
 class AddressRecords:
     """Property records by street address, for listings whose address matches no recorded sale (a home that has not
-    sold within the stored sales). One batched query per ~100 new addresses; answers, including "no such parcel", are
-    cached in the store for ADDRESS_REFRESH_DAYS. A failed lookup is logged once and the cards are built without it."""
+    sold within the stored sales), and parcel positions, for listings whose publisher gave no coordinates. One batched
+    query per ~100 new addresses; answers, including "no such parcel", are cached in the store for
+    ADDRESS_REFRESH_DAYS. A failed lookup is logged once and the cards are built without it."""
 
     def __init__(self, store, city, client, today, log=print):
         from .characteristics import CITIES
         self.city, self.client, self.today, self.log = city, client, today, log
         self.spec = (CITIES.get(city) or {}).get("by_address")
         self.path = address_cache_path(store, city)
-        self.entries = {}          # normalised street address "1214 S 21 ST" -> {"fetched": date, "parcels": [...]}
-        self.index = {}            # normalize_address key[:3] -> {parcel: entry}
+        self.entries = {}          # normalised street address "1214 S 21 ST" -> {"v", "fetched": date, "parcels": [...]}
+        self.index = {}            # normalize_address key[:3] -> {parcel: entry}, single and multi family parcels
+        self.points = {}           # street address -> [(unit, parcel)] for every parcel with a position
         cached = read_json(self.path) if self.path else None
         oldest = (datetime.fromisoformat(today).date() - timedelta(days=ADDRESS_REFRESH_DAYS)).isoformat()
         for street, e in ((cached or {}).get("addresses") or {}).items():
-            if isinstance(e, dict) and isinstance(e.get("parcels"), list) and str(e.get("fetched") or "") >= oldest:
+            if (isinstance(e, dict) and e.get("v") == ADDRESS_CACHE_VERSION and isinstance(e.get("parcels"), list)
+                    and str(e.get("fetched") or "") >= oldest):
                 self.entries[street] = e
         self.fetched = 0
 
@@ -224,27 +284,55 @@ class AddressRecords:
                 found = {}
                 for p in self.spec["fetch"](self.client, part):
                     found.setdefault(p["location"], []).append(p)
-                for loc in part:          # an address with no single or multi family parcel is cached as such
-                    self.entries[wanted[loc]] = {"fetched": self.today, "parcels": found.get(loc, [])}
+                for loc in part:          # an address with no parcel is cached as such
+                    self.entries[wanted[loc]] = {"v": ADDRESS_CACHE_VERSION, "fetched": self.today,
+                                                 "parcels": found.get(loc, [])}
                 self.fetched += len(part)
         except Exception as exc:   # noqa: BLE001  the cards never depend on this lookup
             self.log(f"{self.city}: property records by address not looked up for {len(locs) - self.fetched} "
                      f"listings ({type(exc).__name__}: {str(exc)[:120]}); they keep the area comparison")
         if self.fetched and self.path:
             try:
-                write_json(self.path, {"about": "OPA property records by street address for current listings "
+                write_json(self.path, {"about": "OPA property records and parcel positions by street address for "
+                                                "current listings "
                                                 "(engine/listing_cards.py AddressRecords); refreshed after "
                                                 f"{ADDRESS_REFRESH_DAYS} days", "addresses": self.entries})
             except OSError as exc:
                 self.log(f"{self.city}: address lookups not cached ({exc})")
         for street, e in self.entries.items():
             for p in e["parcels"]:
-                if not isinstance(p, dict) or not p.get("p") or not isinstance(p.get("rec"), dict):
+                if not isinstance(p, dict) or not p.get("p"):
                     continue
-                key = normalize_address(p.get("location", "") + (f" #{p['unit']}" if p.get("unit") else ""), self.city)
-                if key and self.street(key) == street:
+                key = normalize_address(str(p.get("location") or "") + (f" #{p['unit']}" if p.get("unit") else ""),
+                                        self.city)
+                if not key or self.street(key) != street:
+                    continue
+                if type(p.get("lat")) is float and type(p.get("lon")) is float:
+                    self.points.setdefault(street, []).append((key[2], p))
+                if isinstance(p.get("rec"), dict):        # single and multi family: a record the model can price
                     self.index.setdefault(key[:3], {})[p["p"]] = p
         return self
+
+    def position(self, address, zip_code=None, bounds=None):
+        """(lat, lon) of the parcel at a listing's address, or None. The listing's unit picks its own parcel when there
+        is one; otherwise every parcel at the street address (a condo building's units, say) must lie within
+        PIN_SPREAD_KM of each other, and their centre is used. A parcel in another ZIP than the listing's, or outside
+        `bounds` (south, north, west, east), is never used. Any category: a position is only a pin, never an estimate."""
+        key = normalize_address(address, self.city)
+        if not key:
+            return None
+        zip_code = (zip_code or key[3] or "")[:5]
+        hits = [(unit, p) for unit, p in self.points.get(self.street(key)) or []
+                if not (zip_code and p.get("zip") and p["zip"][:5] != zip_code)
+                and (not bounds or (bounds[0] <= p["lat"] <= bounds[1] and bounds[2] <= p["lon"] <= bounds[3]))]
+        own = [h for h in hits if key[2] and h[0] == key[2]]
+        pts = [(p["lat"], p["lon"]) for _, p in own or hits]
+        if not pts:
+            return None
+        lat, lon = sum(a for a, _ in pts) / len(pts), sum(b for _, b in pts) / len(pts)
+        if any(_km(lat, lon, a, b) > PIN_SPREAD_KM for a, b in pts):
+            return None
+        return lat, lon
 
     def match(self, address, zip_code=None, parcels=None):
         """(sale row or None, property record) when the address names exactly one parcel after ZIP disambiguation
@@ -472,9 +560,7 @@ def card_for(row, ctx):
                                                     if u in ctx["tags"]), None)
     sqft = _num(row.get("sqft")) or _num(((tag or {}).get("compare") or {}).get("sqft"))
     home_type = infer_type(row, city) or ((tag or {}).get("compare") or {}).get("type")
-    lat, lon = _num(row.get("lat")), _num(row.get("lon"))
-    if lat is not None and not (-90 <= lat <= 90 and -180 <= lon <= 180):
-        lat = lon = None
+    lat, lon = publisher_position(row)
     links = []
     for s in row.get("sources") or [{"source": row.get("source"), "url": row.get("url")}]:
         if s.get("url") and s["url"] not in [x["url"] for x in links]:
@@ -483,8 +569,16 @@ def card_for(row, ctx):
             "price": price, "source": row.get("source"), "links": links,
             "facts": {k: v for k, v in (("beds", _num(row.get("beds"))), ("baths", _num(row.get("baths"))),
                                         ("sqft", sqft), ("type", row.get("type")), ("homeType", home_type)) if v is not None}}
+    sale, record = ctx["parcels"].match(row.get("address"), row.get("zip")) if ctx["parcels"] else (None, None)
+    if record is None and ctx.get("addresses") and home_type not in NO_PPSF_TYPES:   # not sold within our sales
+        sale, record = ctx["addresses"].match(row.get("address"), row.get("zip"), ctx["parcels"])
+    pin_from = None      # absent: the publisher's own coordinates; "sale" / "parcel": from the city's records
+    if lat is None:
+        lat, lon, pin_from = fallback_position(row, sale, ctx)
     if lat is not None and lon is not None:
         card.update(lat=round(lat, 6), lon=round(lon, 6))
+        if pin_from:
+            card["pinFrom"] = pin_from
     for k in ("firstSeen", "lastSeen"):   # when a publisher's read first and last listed the home (live_listings)
         if isinstance(row.get(k), str):
             card[k] = row[k][:10]
@@ -497,9 +591,6 @@ def card_for(row, ctx):
         name = ctx["locator"].find(lat, lon)
         area = ctx["areas_by_key"].get(f"{name}|") if name else None
         mapping = "boundary" if area else mapping
-    sale, record = ctx["parcels"].match(row.get("address"), row.get("zip")) if ctx["parcels"] else (None, None)
-    if record is None and ctx.get("addresses") and home_type not in NO_PPSF_TYPES:   # not sold within our sales
-        sale, record = ctx["addresses"].match(row.get("address"), row.get("zip"), ctx["parcels"])
     if area is None:
         found, how, _, _ = ctx["index"].locate(row)
         area, mapping = (found, how) if found else (None, "none")
@@ -750,7 +841,9 @@ def build(root, city, store=None, now=None, listings_root=None, client=None, log
     parcels = None
     if store is not None and predictor:
         parcels = ParcelIndex(store, city)
+    from .characteristics import CITIES as RECORD_CITIES
     ctx = {"city": city, "today": now.date().isoformat(), "tags": tags, "predictor": predictor, "parcels": parcels,
+           "bounds": (RECORD_CITIES.get(city) or {}).get("bounds"),
            "locator": _locator(store, city), "areas_by_key": {a["key"]: a for a in areas},
            "areas_by_name": {**{a["key"].partition("|")[0]: a for a in areas}, **{a["name"]: a for a in areas}},
            "label": lambda key: area_label(CITY_CFG.get(city) or {"area_by": "area"}, key)[0],
@@ -765,9 +858,13 @@ def build(root, city, store=None, now=None, listings_root=None, client=None, log
             rows.append({"url": t["url"], "address": t.get("address"), "date": t.get("date"), "price": t.get("price"),
                          "source": t.get("source"), "inSnapshot": False})
     if parcels is not None and (parcels.cfg or {}).get("by_address"):
-        unmatched = [r.get("address") for r in rows if parcels.match(r.get("address"), r.get("zip"))[1] is None
-                     and infer_type(r, city) not in NO_PPSF_TYPES]
-        ctx["addresses"] = AddressRecords(store, city, client, ctx["today"], log).prepare(unmatched)
+        asked = []    # no recorded sale to price from (not condos), or no pin from the publisher or a recorded sale
+        for r in rows:
+            sale, record = parcels.match(r.get("address"), r.get("zip"))
+            if ((record is None and infer_type(r, city) not in NO_PPSF_TYPES)
+                    or (publisher_position(r)[0] is None and not sale_position(sale, _listing_zip(r), ctx["bounds"]))):
+                asked.append(r.get("address"))
+        ctx["addresses"] = AddressRecords(store, city, client, ctx["today"], log).prepare(asked)
     cards = [card_for(r, ctx) for r in rows]
     details = {}
     for c in cards:
@@ -809,6 +906,9 @@ def publish(root, city, store=None, now=None, log=print, listings_root=None, cli
         if old.stem not in details:
             old.unlink()
     write_json(Path(root) / city / "listing-cards.json", doc)
+    intake = listings_intake.build_for(root, city, now or datetime.now(timezone.utc), listings_root)
+    if intake is not None:
+        write_json(Path(root) / city / "listings-intake.json", intake)
     s = doc["summary"]
     log(f"{city}: listing-cards.json, {s['cards']} homes ({s['withPin']} with a pin, {s['withArea']} in an area); "
         f"estimates {s['estimates']}")

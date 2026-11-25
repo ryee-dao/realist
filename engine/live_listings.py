@@ -9,6 +9,7 @@ and <city>/listings.json merges every publisher's latest snapshot into one row p
 import argparse
 import http.client
 import json
+import math
 import os
 import re
 import sys
@@ -70,6 +71,7 @@ def read_source(source, city, now, load, pause):
     earliest, today = window(city, now)
     limit = min(getattr(source, "MAX_PAGES", PAGE_LIMIT), PAGE_LIMIT)
     rows, pages, error = {}, 0, None
+    skipped = {"date": 0, "price": 0}   # rows read but not kept: listed outside the window, or no usable price
     partial, interrupted = getattr(source, "SAMPLE", False), False
     url = source.search_url(city, 1)
     for number in range(1, limit + 1):
@@ -88,7 +90,11 @@ def read_source(source, city, now, load, pause):
             error, candidates = exc, []
         pages += 1
         for row in candidates:
-            if earliest <= row["date"] <= today and valid_price(row["price"]):
+            if not earliest <= row["date"] <= today:
+                skipped["date"] += 1
+            elif not valid_price(row["price"]):
+                skipped["price"] += 1
+            else:
                 rows.setdefault(row["url"], row)
         if error is not None:
             interrupted = partial = True
@@ -107,7 +113,7 @@ def read_source(source, city, now, load, pause):
         url = next_url
         pause(1)
     return {"source": source.NAME, "pages": pages, "partial": partial, "interrupted": interrupted, "error": error,
-            "rows": sorted(rows.values(), key=lambda r: r["date"], reverse=True)}
+            "skipped": skipped, "rows": sorted(rows.values(), key=lambda r: r["date"], reverse=True)}
 
 
 def paused_publishers():
@@ -235,12 +241,15 @@ DIRECTIONS = {"NORTH": "N", "SOUTH": "S", "EAST": "E", "WEST": "W", "N": "N", "S
 UNIT_WORDS = {"APT", "APARTMENT", "UNIT", "#", "STE", "SUITE", "FL", "FLOOR", "RM", "ROOM"}
 
 
-def home_key(address, zip_code=None):
-    """A publisher-independent key for a street address: number, street, unit and ZIP code.
+# ZIP prefixes (Queens, Brooklyn, western Nassau) where "84-27" can be one house number rather than a range
+QUEENS_ZIPS = ("110", "111", "112", "113", "114", "116")
 
-    "220 S Green Street #4S, Chicago, IL 60607" and "220 South Green St Unit 4S Chicago, IL 60607" share a key.
-    Queens-style house numbers ("84-27") are joined; a Philadelphia-style range ("2429-31") keeps its first number.
-    """
+
+def _address_parts(address, zip_code=None):
+    """(number, street words, the street's core words, unit, ZIP) for a street address, or None.
+
+    The core is the street without its suffix and trailing direction ("BELMAR" for "Belmar Ter" or "Belmar Street"),
+    used only to spot one home listed under two suffixes (see fold_variants)."""
     if not isinstance(address, str) or not address.strip():
         return None
     text = unescape(address).upper()
@@ -249,17 +258,30 @@ def home_key(address, zip_code=None):
     tokens = head.split()
     if not tokens or not re.match(r"\d", tokens[0]):
         return None
+    # A hyphenated number is one Queens-style house number ("84-27 Parsons Blvd" is 8427, "121-61 Flatlands Ave" in
+    # Brooklyn is 12161) in a QUEENS_ZIPS code when its second part has two digits, or, with no ZIP known, when both
+    # parts are short. Elsewhere it is a range ("743-747", "2429-31", Manhattan's "20-26"): its first number.
     queens = re.fullmatch(r"(\d{1,3})-(\d{1,3}[A-Z]?)", tokens[0])
-    number = queens[1] + queens[2] if queens else re.match(r"\d+[A-Z]?", tokens[0])[0]
+    if queens and (str(zip_code).startswith(QUEENS_ZIPS) and re.fullmatch(r"\d\d[A-Z]?", queens[2]) if zip_code else True):
+        number = queens[1] + queens[2]
+    else:
+        number = re.match(r"\d+[A-Z]?", tokens[0])[0]
     rest = tokens[1:]
+    while rest and re.fullmatch(r"0+", rest[0]):
+        rest = rest[1:]  # a stray "00" after the number: "2001 00 Hamilton St #1516"
     # The street ends at its last suffix word before any unit word; a Movoto-style city name may follow it.
     stop = next((i for i, t in enumerate(rest) if t in UNIT_WORDS), len(rest))
     ends = [i for i in range(1, stop) if rest[i] in SUFFIXES]
     end = ends[-1] + 1 if ends else stop
+    trailing = None
     if ends and end < stop and rest[end] in DIRECTIONS:
+        trailing = DIRECTIONS[rest[end]]
         end += 1
     street = [SUFFIXES[t] if ends and i == ends[-1] else re.sub(r"^(\d+)(?:ST|ND|RD|TH)$", r"\1", DIRECTIONS.get(t, t))
               for i, t in enumerate(rest[:end])]
+    if trailing and len(street) > 1 and street[0] == trailing:
+        street.pop()  # "1906 E Allegheny Ave E Philadelphia": the direction repeated after the suffix
+        trailing = None
     if stop < len(rest):
         unit = next((t for t in rest[stop + 1:] if t not in UNIT_WORDS), None)
     elif end < len(rest) and re.search(r"\d", rest[end]) and len(rest[end]) <= 6:
@@ -269,7 +291,34 @@ def home_key(address, zip_code=None):
     if not street:
         return None
     unit = re.sub(r"[^A-Z0-9]", "", unit or "").lstrip("0") or None
+    core = street[:len(street) - (trailing is not None) - bool(ends)]
+    return number, street, core, unit, zip_code
+
+
+def home_key(address, zip_code=None):
+    """A publisher-independent key for a street address: number, street, unit and ZIP code.
+
+    "220 S Green Street #4S, Chicago, IL 60607" and "220 South Green St Unit 4S Chicago, IL 60607" share a key.
+    Queens-style house numbers ("84-27", in a QUEENS_ZIPS code) are joined; elsewhere a range ("2429-31", "743-747")
+    keeps its first number. A stray "00" after the number and a trailing direction repeating the leading one are dropped.
+    """
+    parts = _address_parts(address, zip_code)
+    if parts is None:
+        return None
+    number, street, _, unit, zip_code = parts
     return " ".join([number] + street) + (f" #{unit}" if unit else "") + (f" {zip_code}" if zip_code else "")
+
+
+def street_core(address, zip_code=None):
+    """Number, street without suffix or trailing direction, unit and ZIP: the same home under two suffixes shares it.
+    None without a ZIP code or a street name (a bare direction is not one)."""
+    parts = _address_parts(address, zip_code)
+    if parts is None:
+        return None
+    number, _, core, unit, zip_code = parts
+    if not zip_code or not any(w not in DIRECTIONS.values() for w in core):
+        return None
+    return (number, tuple(core), unit, str(zip_code))
 
 
 def same_price(a, b):
@@ -297,6 +346,76 @@ def merge_home(key, entries):
     return row
 
 
+VARIANT_METERS = 150  # two rows whose coordinates are farther apart than this are never folded as one home
+
+
+def _meters(a, b):
+    try:
+        lat1, lon1, lat2, lon2 = (math.radians(float(v)) for v in (a["lat"], a["lon"], b["lat"], b["lon"]))
+    except (KeyError, TypeError, ValueError):
+        return None
+    h = math.sin((lat2 - lat1) / 2) ** 2 + math.cos(lat1) * math.cos(lat2) * math.sin((lon2 - lon1) / 2) ** 2
+    return 2 * 6371000 * math.asin(math.sqrt(h))
+
+
+def same_home(a, b):
+    """Whether two rows whose addresses differ only in street suffix or trailing direction (one street_core) are one
+    home: one price, no publisher listing them under different URLs at different prices, and, when both rows have
+    coordinates, no more than VARIANT_METERS apart."""
+    if not same_price(a.get("price"), b.get("price")):
+        return False
+    far = _meters(a, b)
+    if far is not None and far > VARIANT_METERS:
+        return False
+    for ea in a.get("sources") or []:
+        for eb in b.get("sources") or []:
+            if (isinstance(ea, dict) and isinstance(eb, dict) and ea.get("provider") == eb.get("provider")
+                    and ea.get("url") != eb.get("url")
+                    and not same_price(ea.get("price", a.get("price")), eb.get("price", b.get("price")))):
+                return False
+    return True
+
+
+def _core(row):
+    return street_core(row.get("address"), row.get("zip"))
+
+
+def fold_variants(rows):
+    """Merge rows that are one home whose publishers disagree on the street suffix ("5502 Belmar Ter" and "5502 Belmar
+    Street", same ZIP, unit and price; see same_home). The kept key is the one with the most publishers, then one
+    without a "~n" slot, then the lexicographically first. Rows without a street_core pass through."""
+    out, groups = [], {}
+    for r in rows:
+        core = _core(r)
+        if core is None:
+            out.append(r)
+        else:
+            groups.setdefault(core, []).append(r)
+    for group in groups.values():
+        group.sort(key=lambda r: (-len({e.get("provider") for e in r["sources"]}), " ~" in r["key"], r["key"]))
+        clusters = []
+        for r in group:
+            home = next((c for c in clusters if all(same_home(m, r) for m in c)), None)
+            if home is None:
+                clusters.append([r])
+            else:
+                home.append(r)
+        for c in clusters:
+            if len(c) == 1:
+                out.append(c[0])
+                continue
+            entries = []
+            for e in (e for m in c for e in m["sources"]):
+                twin = next((x for x in entries if x["provider"] == e["provider"]
+                             and (x["url"] == e["url"] or same_price(x.get("price"), e.get("price")))), None)
+                if twin is None:
+                    entries.append(e)
+                elif len(e.get("photos") or []) > len(twin.get("photos") or []):
+                    entries[entries.index(twin)] = e
+            out.append(merge_home(c[0]["key"], entries))
+    return out
+
+
 def merge_city(root, city, now, inactive=()):
     """One row per home: every publisher's latest snapshot read within the last WINDOW_DAYS, plus every home kept from
     the previous merged file, so homes accumulate while they are on the market.
@@ -320,6 +439,8 @@ def merge_city(root, city, now, inactive=()):
         if snapshot.get("status") != "ready" or (snapshot.get("asOf") or "") < cutoff:
             continue
         publishers[provider] = {"source": snapshot.get("source"), "asOf": snapshot["asOf"], "partial": snapshot.get("partial"), "rows": 0}
+        if isinstance(snapshot.get("skipped"), dict):
+            publishers[provider]["skipped"] = snapshot["skipped"]
         for row in snapshot.get("rows") or []:
             if not (isinstance(row, dict) and row.get("url") and earliest <= (row.get("date") or "") <= today and valid_price(row.get("price"))):
                 continue
@@ -343,7 +464,7 @@ def merge_city(root, city, now, inactive=()):
                 continue
             homes.setdefault(slot, []).append(entry)
             publishers[provider]["rows"] += 1
-    fresh = [merge_home(key, entries) for key, entries in homes.items()]
+    fresh = fold_variants([merge_home(key, entries) for key, entries in homes.items()])
     rows = carry_forward(fresh, previous.get("rows") or [], off, earliest)
     for r in rows:
         if r["date"] < slim_before:
@@ -360,10 +481,14 @@ def _urls(row):
 
 
 def carry_forward(fresh, previous, off, earliest):
-    """Fresh rows get firstSeen/lastSeen; earlier rows not read again are kept unless too old or off the market."""
+    """Fresh rows get firstSeen/lastSeen; earlier rows not read again are kept unless too old or off the market.
+
+    An earlier row whose key no address of its own produces any more (home_key changed) is re-keyed first. An earlier
+    row for a home already kept, at the same address or one differing only in suffix (same_home), is folded into it."""
     by_key, by_url = {}, {}
     for old in previous:
         if isinstance(old, dict) and old.get("key"):
+            rekey(old)
             by_key[old["key"]] = old
             for u in _urls(old):
                 by_url[u] = old
@@ -380,18 +505,30 @@ def carry_forward(fresh, previous, off, earliest):
         row["lastSeen"] = max(seen + [(old or {}).get("lastSeen") or ""])
         out.append(row)
     keys = {r["key"] for r in out}
-    by_base = {}
-    for r in out:
+    by_base, by_core = {}, {}
+
+    def index(r):
         by_base.setdefault(base_key(r["key"]), []).append(r)
+        core = _core(r)
+        if core is not None:
+            by_core.setdefault(core, []).append(r)
+
+    for r in out:
+        index(r)
     for old in previous:
-        if (not isinstance(old, dict) or id(old) in used or old.get("key") in keys or not old.get("url")
+        if (not isinstance(old, dict) or id(old) in used or not old.get("url")
                 or (old.get("date") or "") < earliest or _urls(old) & set(off)):
             continue
+        seen = [e.get("asOf") for e in old.get("sources") or [] if isinstance(e, dict) and e.get("asOf")]
+        old.setdefault("firstSeen", min(seen) if seen else None)
+        old.setdefault("lastSeen", max(seen) if seen else None)
         # an earlier row for an address already kept at the same price is that home under another link: fold it in
-        twin = next((r for r in by_base.get(base_key(old["key"]), []) if same_price(r.get("price"), old.get("price"))), None)
+        twin = (next((r for r in by_base.get(base_key(old["key"]), []) if same_price(r.get("price"), old.get("price"))), None)
+                or next((r for r in by_core.get(_core(old), []) if same_home(r, old)), None))
         if twin is not None:
             twin["date"] = min(twin["date"], old.get("date") or twin["date"])
             twin["firstSeen"] = min([x for x in (twin.get("firstSeen"), old.get("firstSeen")) if x], default=None)
+            twin["lastSeen"] = max([x for x in (twin.get("lastSeen"), old.get("lastSeen")) if x], default=None)
             if len(old.get("photos") or []) > len(twin.get("photos") or []):
                 twin["photos"] = old["photos"]
             if len(old.get("description") or "") > len(twin.get("description") or ""):
@@ -400,12 +537,25 @@ def carry_forward(fresh, previous, off, earliest):
             twin["sources"] = twin.get("sources", []) + [e for e in old.get("sources") or []
                                                          if isinstance(e, dict) and e.get("url") not in have]
             continue
-        seen = [e.get("asOf") for e in old.get("sources") or [] if isinstance(e, dict) and e.get("asOf")]
-        old.setdefault("firstSeen", min(seen) if seen else None)
-        old.setdefault("lastSeen", max(seen) if seen else None)
+        if old.get("key") in keys:
+            continue   # a home read again under this key, at another price
         out.append(old)
-        by_base.setdefault(base_key(old["key"]), []).append(old)
+        index(old)
     return out
+
+
+def rekey(row):
+    """Give a stored row the key the current home_key gives its address, when no address it holds still produces its
+    key (a stored "743747 S MILDRED ST 19147" becomes "743 S MILDRED ST 19147"); a "~n" slot is kept."""
+    key = str(row.get("key"))
+    base, sep, slot = key.partition(" ~")
+    zip_code = row.get("zip")
+    held = [(row.get("address"), zip_code)] + [(e.get("address"), e.get("zip") or zip_code)
+                                               for e in row.get("sources") or [] if isinstance(e, dict)]
+    current = {home_key(a, z) for a, z in held}
+    new = home_key(row.get("address"), zip_code)
+    if new and base not in current and base != row.get("url"):
+        row["key"] = new + sep + slot
 
 
 def slim(row):
