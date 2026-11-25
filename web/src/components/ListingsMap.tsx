@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react'
 import L from 'leaflet'
+import { escapeHtml } from '../lib/safeUrl'
 
 export interface ListingPin {
   id: string
@@ -31,6 +32,7 @@ export default function ListingsMap({ center, zoom, pins, active, focus, onHover
   const map = useRef<L.Map | null>(null)
   const layer = useRef<L.LayerGroup | null>(null)
   const markers = useRef(new Map<string, L.Marker>())
+  const made = useRef(new Map<string, string>())   // id -> what its marker was built from
   const fitted = useRef(false)
   // Pins of the current page keep their price label unless it would overlap one placed before it (they come first);
   // the rest shrink to a dot of the same age style, and hover shows the price. The active pin always sits on top.
@@ -46,8 +48,9 @@ export default function ListingsMap({ center, zoom, pins, active, focus, onHover
       const pt = m.latLngToLayerPoint(mk.getLatLng())
       const w = (el.textContent?.length ?? 4) * 7 + 12
       const clash = off || placed.some((q) => Math.abs(q.x - pt.x) < (q.w + w) / 2 && Math.abs(q.y - pt.y) < 17)
-      el.classList.toggle('dot', clash)
-      mk.setZIndexOffset(wrap.classList.contains('on') ? 3000 : off ? -2000 : clash ? -1000 : 0)
+      if (el.classList.contains('dot') !== clash) el.classList.toggle('dot', clash)
+      const z = wrap.classList.contains('on') ? 3000 : off ? -2000 : clash ? -1000 : 0
+      if (mk.options.zIndexOffset !== z) mk.setZIndexOffset(z)   // each call rewrites the marker's position: skip no-ops
       if (!clash) placed.push({ x: pt.x, y: pt.y, w })
     })
   })
@@ -62,23 +65,40 @@ export default function ListingsMap({ center, zoom, pins, active, focus, onHover
     layer.current = L.layerGroup().addTo(m)
     m.on('zoomend', () => declutter.current())
     map.current = m
-    return () => { m.remove(); map.current = null }
+    return () => { m.remove(); map.current = null; markers.current.clear(); made.current.clear() }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  // Markers are kept across renders: paging only flips the faded style of the pins that change page, and a filter
+  // adds or removes only the pins it changes. A pin is rebuilt only if its place, label, age or tip changes.
   useEffect(() => {
     const group = layer.current!
-    group.clearLayers()
-    markers.current.clear()
+    const old = markers.current
+    const next = new Map<string, L.Marker>()
     for (const p of pins) {
-      const icon = L.divIcon({ className: 'lc-pin-wrap', iconSize: [0, 0], html: `<span class="lc-pin a${p.age}${p.dim ? ' off' : ''}">${p.label}</span>` })
-      const mk = L.marker([p.lat, p.lon], { icon, keyboard: false, riseOnHover: true, title: p.tip })
-        .on('mouseover', () => cb.current.onHover(p.id))
-        .on('mouseout', () => cb.current.onHover(null))
-        .on('click', () => cb.current.onPick(p.id))
-        .addTo(group)
-      markers.current.set(p.id, mk)
+      const html = `<span class="lc-pin a${+p.age || 0}${p.dim ? ' off' : ''}">${escapeHtml(p.label)}</span>`   // Leaflet sets this as HTML
+      const sig = `${p.lat},${p.lon}|${p.label}|${p.age}|${p.tip}`
+      let mk = old.get(p.id)
+      if (mk && made.current.get(p.id) !== sig) { group.removeLayer(mk); mk = undefined }
+      if (mk) {
+        const icon = mk.options.icon as L.DivIcon
+        if (icon.options.html !== html) {
+          icon.options.html = html   // what Leaflet would draw if it ever rebuilt the icon
+          mk.getElement()?.firstElementChild?.classList.toggle('off', !!p.dim)
+        }
+      } else {
+        const icon = L.divIcon({ className: 'lc-pin-wrap', iconSize: [0, 0], html })
+        mk = L.marker([p.lat, p.lon], { icon, keyboard: false, riseOnHover: true, title: p.tip })
+          .on('mouseover', () => cb.current.onHover(p.id))
+          .on('mouseout', () => cb.current.onHover(null))
+          .on('click', () => cb.current.onPick(p.id))
+          .addTo(group)
+        made.current.set(p.id, sig)
+      }
+      next.set(p.id, mk)
     }
+    old.forEach((mk, id) => { if (!next.has(id)) { group.removeLayer(mk); made.current.delete(id) } })
+    markers.current = next   // in pin order: the page's pins first, so declutter labels them first
     if (!fitted.current && pins.length && map.current) {
       fitted.current = true
       map.current.fitBounds(L.latLngBounds(pins.map((p) => [p.lat, p.lon] as [number, number])), { padding: [24, 24], maxZoom: 14 })

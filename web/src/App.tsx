@@ -5,18 +5,38 @@ import { useRoute, useTheme } from './lib/hooks'
 import { monthLabel, pct, timeAgo, usd } from './lib/format'
 import { site } from './site'
 import Sparkline from './charts/Sparkline'
-import Market from './pages/Market'
-import Drivers from './pages/Drivers'
-import AreasPage from './pages/Areas'
-import SoldPage from './pages/Sold'
-import About from './pages/About'
-import NewListings from './pages/NewListings'
-import ComparePage from './pages/Compare'
-import ScreenerPage from './pages/Screener'
-import Pipeline from './pages/Pipeline'
 
-// DuckDB-WASM and the page around it load only when Explore opens
-const Explore = lazy(() => import('./pages/Explore'))
+// Each page is its own chunk, fetched when it is first opened (DuckDB-WASM only ever loads from inside Explore).
+const PAGES = {
+  market: () => import('./pages/Market'),
+  drivers: () => import('./pages/Drivers'),
+  areas: () => import('./pages/Areas'),
+  sold: () => import('./pages/Sold'),
+  about: () => import('./pages/About'),
+  listings: () => import('./pages/NewListings'),
+  compare: () => import('./pages/Compare'),
+  find: () => import('./pages/Screener'),
+  pipeline: () => import('./pages/Pipeline'),
+  explore: () => import('./pages/Explore'),
+} as const
+type PageId = keyof typeof PAGES
+const preload = (id: string) => { if (id in PAGES) PAGES[id as PageId]().catch(() => {}) }
+const Market = lazy(PAGES.market)
+const Drivers = lazy(PAGES.drivers)
+const AreasPage = lazy(PAGES.areas)
+const SoldPage = lazy(PAGES.sold)
+const About = lazy(PAGES.about)
+const NewListings = lazy(PAGES.listings)
+const ComparePage = lazy(PAGES.compare)
+const ScreenerPage = lazy(PAGES.find)
+const Pipeline = lazy(PAGES.pipeline)
+const Explore = lazy(PAGES.explore)
+// The page being opened starts downloading alongside the app and index.json, not after them.
+{
+  const at = window.location.hash.replace(/^#\/?/, '').split('?')[0].split('/').filter(Boolean)
+  const first = at[0] === 'pipeline' || at[0] === 'about' ? at[0] : at[1] ?? 'find'
+  preload(first === 'sales' ? 'sold' : first)
+}
 
 const ICON: Record<string, string> = {
   market: 'M3 17l5-6 4 3 6-8M3 21h18',
@@ -33,7 +53,7 @@ const ICON: Record<string, string> = {
 
 function Item({ id, label, href, on }: { id: string; label: string; href: string; on: boolean }) {
   return (
-    <a className={`item ${on ? 'on' : ''}`} href={href} aria-current={on ? 'page' : undefined}>
+    <a className={`item ${on ? 'on' : ''}`} href={href} aria-current={on ? 'page' : undefined} onPointerEnter={() => preload(id)} onFocus={() => preload(id)}>
       <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={ICON[id]} /></svg>
       {label}
     </a>
@@ -116,6 +136,10 @@ export default function App() {
       <main className="main">
         {error && <div className="notice bad">The data files could not be loaded. {error}</div>}
         {!index && !error && <div className="loading">Loading market data…</div>}
+        {/* One fallback for the first load, the same placeholder as for index.json, so the page arrives in the same
+            steps as before code splitting (no extra layout shift); later route changes keep the old page up until the
+            next one's chunk is in (useRoute switches routes in a transition). */}
+        <Suspense fallback={index && <div className="loading">Loading market data…</div>}>
         {index && !global && city && (
           <>
             <nav className="ticker" aria-label="City">
@@ -140,17 +164,18 @@ export default function App() {
             {page === 'areas' && <AreasPage key={city.id} city={city} theme={theme} />}
             {page === 'listings' && <NewListings key={city.id} city={city} />}
             {page === 'sold' && <SoldPage key={city.id} city={city} />}
-            {page === 'explore' && <Suspense fallback={<div className="loading">Loading the explorer…</div>}><Explore key={city.id} city={city} /></Suspense>}
+            {page === 'explore' && <Explore key={city.id} city={city} />}
             {page === 'compare' && <ComparePage key={city.id} city={city} theme={theme} />}
             {page === 'find' && <ScreenerPage key={city.id} city={city} theme={theme} />}
           </>
         )}
         {index && status && page === 'pipeline' && global && <Pipeline index={index} status={status} />}
         {page === 'about' && <About />}
+        </Suspense>
 
         <footer className="footer">
           <span>Built from open public records. Figures are for research, not appraisal or financial advice.</span>
-          <span>Built by <a href={site.authorUrl} target="_blank" rel="noreferrer">{site.author}</a></span>
+          <span>Built by <a href={site.authorUrl} target="_blank" rel="noopener noreferrer">{site.author}</a></span>
         </footer>
       </main>
     </div>

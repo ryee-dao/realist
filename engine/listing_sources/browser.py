@@ -2,7 +2,21 @@
 from contextlib import contextmanager
 from urllib.error import HTTPError
 
+from ..netguard import HostCheck, check_url
 from .pages import Blocked, CHALLENGE_TITLES, Page, USER_AGENT
+
+SKIPPED_RESOURCES = {"image", "media", "font"}
+
+
+def request_filter(hosts):
+    """Route handler: drop image/media/font loads, and any request that is not https to a public host (a hostile
+    page's scripts must not reach the runner's local network or the cloud metadata address)."""
+    def route(route):
+        request = route.request
+        if request.resource_type in SKIPPED_RESOURCES or not hosts.allowed(request.url):
+            return route.abort()
+        return route.continue_()
+    return route
 
 
 @contextmanager
@@ -15,10 +29,10 @@ def browser_loader():
         try:
             context = browser.new_context(user_agent=USER_AGENT, accept_downloads=False, service_workers="block")
             # Search cards contain gallery addresses. Loading image pixels is a separate photo-analysis job.
-            context.route("**/*", lambda route: route.abort() if route.request.resource_type in {"image", "media", "font"}
-                          else route.continue_())
+            context.route("**/*", request_filter(HostCheck()))
 
             def load(url):
+                check_url(url)
                 page = context.new_page()
                 try:
                     response = page.goto(url, wait_until="domcontentloaded", timeout=20000)

@@ -23,12 +23,11 @@ on:
         default: "1000"
       mode:
         description: "auto, normal or slow"
+        type: choice
+        options: [auto, normal, slow]
         default: "auto"
 
-permissions:
-  contents: write     # push listing-analysis/ to the data branch
-  pages: read         # find the deployed site, to read its area figures and listing cards
-  actions: write      # delete superseded photo-hold caches, so only the newest one counts against the cache quota
+permissions: {}      # each job below asks only for what it needs
 
 concurrency:
   group: photo-tags
@@ -37,6 +36,7 @@ concurrency:
 jobs:
   check:
     runs-on: ubuntu-latest
+    permissions: {}
     outputs:
       claude: ${{ steps.secrets.outputs.claude }}
       codex: ${{ steps.secrets.outputs.codex }}       # file, key or none
@@ -60,8 +60,25 @@ jobs:
     if: needs.check.outputs.claude == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 110
+    permissions:
+      contents: write     # push listing-analysis/ to the data branch
+      pages: read         # find the deployed site, to read its area figures and listing cards
+      actions: write      # delete superseded photo-hold caches, so only the newest one counts against the cache quota
+    env:
+      # workflow_dispatch inputs reach the shell only through these, checked in "Check the run settings"
+      RUN_MODE: ${{ inputs.mode || 'auto' }}
+      RUN_LIMIT: ${{ inputs.limit || '1000' }}
+      CODEX_MODE: ${{ needs.check.outputs.codex }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262   # v4.4.0
+        with:
+          persist-credentials: false   # the data-branch clone below carries its own token; this checkout never pushes
+
+      - name: Check the run settings
+        run: |
+          case "$RUN_MODE" in auto|normal|slow) ;; *) echo "::error::mode must be auto, normal or slow"; exit 1 ;; esac
+          case "$RUN_LIMIT" in ''|*[!0-9]*) echo "::error::limit must be a whole number"; exit 1 ;; esac
+          case "$CODEX_MODE" in file|key|none) ;; *) echo "::error::unexpected Codex mode"; exit 1 ;; esac
 
       - name: Check out the data branch
         run: |
@@ -72,10 +89,10 @@ jobs:
             git remote add origin "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git"
           fi
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065   # v5.6.0
         with:
           python-version: "3.12"
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020   # v4.4.0
         with:
           node-version: 22
 
@@ -83,13 +100,25 @@ jobs:
         run: |
           npm install -g @anthropic-ai/claude-code@latest
           pip install pillow || echo "::warning::Pillow not installed; ImageMagick is used for crops if present"
-          if [ "${{ needs.check.outputs.codex }}" != "none" ]; then npm install -g @openai/codex@latest; fi
+          if [ "$CODEX_MODE" != "none" ]; then npm install -g @openai/codex@latest; fi
           claude --version
 
-      - uses: actions/cache/restore@v4
+      - id: listings
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830   # v4.3.0
+        with:
+          path: sealed/listings
+          key: listings-v2-photos-${{ github.run_id }}
+          restore-keys: listings-v2-
+      - name: Open the listings cache
+        env:
+          REALIST_CACHE_KEY: ${{ secrets.REALIST_CACHE_KEY }}
+        run: bash .github/scripts/sealed-cache.sh open harvested-listings sealed/listings
+      # One-time move from the old unsealed cache (listings-v1-), until the listings harvest has written a sealed one.
+      - if: steps.listings.outputs.cache-matched-key == ''
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830   # v4.3.0
         with:
           path: harvested-listings
-          key: listings-v1-photos-${{ github.run_id }}
+          key: listings-v1-none
           restore-keys: listings-v1-
 
       # Area figures and listing cards (with estimates, for slow-mode ranking) from the deployed site. Without them
@@ -129,17 +158,22 @@ jobs:
       # The photo hold (engine/photo_hold.py): photos of queued listings, shrunk, kept privately and briefly so tagging
       # does not depend on the publisher at tagging time and partial galleries resume. It lives ONLY in this Actions
       # cache: never on the data branch, in an artifact or in the Pages artifact. This workflow is its only writer.
+      # Pull-request workflows can restore this branch's caches, so the hold is cached sealed (encrypted).
       - name: Restore the photo hold
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830   # v4.3.0
         with:
-          path: photo-hold
-          key: photo-hold-v1-${{ github.run_id }}
-          restore-keys: photo-hold-v1-
+          path: sealed/photo-hold
+          key: photo-hold-v2-${{ github.run_id }}
+          restore-keys: photo-hold-v2-
+      - name: Open the photo hold
+        env:
+          REALIST_CACHE_KEY: ${{ secrets.REALIST_CACHE_KEY }}
+        run: bash .github/scripts/sealed-cache.sh open photo-hold sealed/photo-hold
 
       - name: Fetch photos for the tagging queue
         run: |
           python -m engine.listing_analysis --city philadelphia --output photo-data --listings harvested-listings \
-            --cache-dir store/listing-analysis --mode "${{ inputs.mode || 'auto' }}" --fetch-photos \
+            --cache-dir store/listing-analysis --mode "$RUN_MODE" --fetch-photos \
             --photo-fetch-limit 40 --photo-fetch-mb 300 --photo-hold-max-gb 0.6 \
             || echo "::warning::Photo fetch failed; tagging falls back to the publishers"
 
@@ -151,9 +185,9 @@ jobs:
           REALIST_CODEX_AUTH_FILE: ${{ needs.check.outputs.codex == 'file' && '1' || '' }}
         run: |
           share=0
-          if [ "${{ needs.check.outputs.codex }}" != "none" ]; then share=0.2; fi
+          if [ "$CODEX_MODE" != "none" ]; then share=0.2; fi
           python -m engine.listing_analysis --city philadelphia --output photo-data --listings harvested-listings \
-            --cache-dir store/listing-analysis --limit "${{ inputs.limit || '1000' }}" --max-calls 100000 --max-minutes 75 --mode "${{ inputs.mode || 'auto' }}" \
+            --cache-dir store/listing-analysis --limit "$RUN_LIMIT" --max-calls 100000 --max-minutes 75 --mode "$RUN_MODE" \
             --codex-share "$share" --photo-hold-max-gb 0.6
 
       # Codex can refresh its tokens in any run; the refreshed file must replace the secret or the next run breaks.
@@ -178,19 +212,26 @@ jobs:
         if: always()
         run: rm -rf "$RUNNER_TEMP/codex-home" "$RUNNER_TEMP/codex-auth.sha256"
 
+      - name: Seal the photo hold
+        if: always()
+        env:
+          REALIST_CACHE_KEY: ${{ secrets.REALIST_CACHE_KEY }}
+        run: bash .github/scripts/sealed-cache.sh seal photo-hold sealed/photo-hold
+
       - name: Save the photo hold (Actions cache only)
         if: always()
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830   # v4.3.0
         with:
-          path: photo-hold
-          key: photo-hold-v1-${{ github.run_id }}
+          path: sealed/photo-hold
+          key: photo-hold-v2-${{ github.run_id }}
 
       - name: Drop superseded photo-hold caches
         if: always()
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh cache list --repo "$GITHUB_REPOSITORY" --key photo-hold-v1- --json id,key --jq '.[] | select(.key != "photo-hold-v1-${{ github.run_id }}") | .id' \
+          # also removes the old unsealed photo-hold-v1- caches
+          gh cache list --repo "$GITHUB_REPOSITORY" --key photo-hold-v --json id,key --jq '.[] | select(.key != "photo-hold-v2-${{ github.run_id }}") | .id' \
             | while read -r id; do gh cache delete "$id" --repo "$GITHUB_REPOSITORY" || true; done
 
       - name: Check that no held photo reaches the data branch

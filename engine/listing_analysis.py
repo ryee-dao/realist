@@ -141,6 +141,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 
+from .netguard import urlopen_public
 from .photo_hold import HOLD_DIR, PhotoHold
 
 DEFAULT_MODEL = "haiku"           # Claude Code alias for the current Haiku model
@@ -809,6 +810,22 @@ Each crop was cut around a defect an earlier pass reported; the message names th
 _SENSITIVE = re.compile(r"\b(?:neighbou?rhoods?|safe|safety|unsafe|crime|residents?|people|person|man|woman|men|women|"
                         r"child(?:ren)?|kids?|famil(?:y|ies)|tenants?|occupants?|owners?|demographic\w*|ethnic\w*|racial|"
                         r"religio\w*|desirable|undesirable|sketchy|rough|up-and-coming|gentrif\w*)\b", re.I)
+# Model text that looks like a credential or an encoded blob is never published: a listing photo or description could
+# carry instructions to copy a token into an evidence field. Known key prefixes, a long letters-and-digits run, or a
+# long base64 run.
+_SECRETISH = re.compile(r"\b(?:sk-|gh[pousr]_|github_pat_|xox[abprs]-|AKIA|ASIA|AIza|eyJ)|-----BEGIN|"
+                        r"\b(?=\w*\d)(?=\w*[A-Za-z])\w{20,}|[A-Za-z0-9+/]{32,}={0,2}")
+
+
+def redact(text):
+    """``text`` (a CLI error message, which can quote the model) with credential-like runs replaced: these messages
+    reach the public Actions log, the usage ledger and the comparison store."""
+    return _SECRETISH.sub("[redacted]", text)
+
+
+def _publishable(text, sensitive=True):
+    """False for model text that must not be shown: credential-like, or (with ``sensitive``) about people or area."""
+    return not _SECRETISH.search(text) and not (sensitive and _SENSITIVE.search(text))
 
 
 class UsageLimit(RuntimeError):
@@ -858,7 +875,7 @@ def download_image(url, pause=time.sleep, limit=PHOTO_BYTES_LIMIT):
         raise ValueError("photo URL is not https")
     pause(1)
     request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-    with urllib.request.urlopen(request, timeout=20) as resp:
+    with urlopen_public(request, timeout=20) as resp:    # public hosts only, redirects re-checked (engine/netguard.py)
         media = (resp.headers.get("Content-Type") or "").split(";")[0].strip().lower()
         if media and not media.startswith("image/"):
             raise ValueError(f"not an image: {media}")
@@ -883,7 +900,20 @@ def build_prompt(row, files):
 _CHILD_ENV_DROP = {"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT",
                    "CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_CHILD_SESSION", "CLAUDE_CODE_MESSAGING_SOCKET",
                    "CLAUDE_CODE_MESSAGING_TOKEN", "CLAUDE_CODE_BRIDGE_SESSION_ID", "CLAUDE_PID",
-                   "CLAUDE_CODE_SESSION_ATTENDED", "CLAUDE_CODE_CHILD_NOTES_DIR", "CLAUDE_EFFORT"}
+                   "CLAUDE_CODE_SESSION_ATTENDED", "CLAUDE_CODE_CHILD_NOTES_DIR", "CLAUDE_EFFORT",
+                   # credentials neither tagger needs: the photos and descriptions they read are untrusted, so a
+                   # child process sees only its own login (see child_env)
+                   "GH_TOKEN", "GITHUB_TOKEN", "CODEX_SECRET_WRITER", "WRITER", "HUD_CENSUS_API_KEY", "CENSUS_API_KEY",
+                   "SOCRATA_APP_TOKEN", "ACTIONS_RUNTIME_TOKEN", "ACTIONS_ID_TOKEN_REQUEST_TOKEN",
+                   "ACTIONS_ID_TOKEN_REQUEST_URL", "ACTIONS_CACHE_URL", "ACTIONS_RESULTS_URL", "REALIST_CACHE_KEY"}
+_CLAUDE_ONLY_ENV = {"CLAUDE_CODE_OAUTH_TOKEN"}
+_CODEX_ONLY_ENV = {"CODEX_API_KEY", "OPENAI_API_KEY", "CODEX_HOME", "REALIST_CODEX_AUTH_FILE"}
+
+
+def child_env(backend):
+    """The environment for one tagger CLI: ours minus _CHILD_ENV_DROP and minus the other backend's credentials."""
+    drop = _CHILD_ENV_DROP | (_CODEX_ONLY_ENV if backend == "claude" else _CLAUDE_ONLY_ENV)
+    return {k: v for k, v in os.environ.items() if k not in drop}
 _LIMIT_TEXT = re.compile(r"usage limit|rate limit|limit reached|limit will reset|resets? at|too many requests|overloaded|quota|"
                          r"hit your (?:session|weekly|opus|sonnet)? ?limit|session limit|weekly limit", re.I)
 _AUTH_TEXT = re.compile(r"not logged in|please run /login|invalid api key|authentication|oauth token|login expired|credential|"
@@ -917,7 +947,9 @@ class ClaudeCLI:
     def command(self, schema=SCHEMA, system=INSTRUCTIONS, model=None):
         cmd = [self.binary, "-p", "--model", model or self.model, "--output-format", self.output,
                "--json-schema", json.dumps(schema, separators=(",", ":")), "--system-prompt", system,
-               "--tools", "Read", "--allowedTools", "Read", "--permission-mode", "dontAsk",
+               # Read is the only tool, and pre-approved only inside the working directory (the photo folder):
+               # with dontAsk, a read anywhere else (/proc/self/environ, the runner's checkouts) is refused
+               "--tools", "Read", "--allowedTools", "Read(./**)", "--permission-mode", "dontAsk",
                "--permission-prompts", "none", "--restricted", "--safe-mode", "--strict-mcp-config",
                "--disable-slash-commands", "--no-session-persistence", "--max-turns", "8"]
         if self.output == "stream-json":
@@ -954,7 +986,7 @@ class ClaudeCLI:
         """Raw result object from the CLI (``structured_output``, ``usage``, ``duration_ms``, ``rate_limits``...)."""
         if not self.available():
             raise BackendUnavailable(f"`{self.binary}` not found; install Claude Code (npm install -g @anthropic-ai/claude-code)")
-        env = {k: v for k, v in os.environ.items() if k not in _CHILD_ENV_DROP}
+        env = child_env("claude")
         try:
             proc = self.run(self.command(schema, system, model), input=prompt, capture_output=True, text=True, cwd=workdir,
                             env=env, timeout=self.timeout)
@@ -966,7 +998,7 @@ class ClaudeCLI:
         out["rate_limits"] = limits
         rejected = [x for x in limits if x.get("status") == "rejected"]
         if out.get("is_error") or proc.returncode or rejected:
-            message = str(out.get("result") or proc.stderr or "")[-500:]
+            message = redact(str(out.get("result") or proc.stderr or "")[-500:])
             if out.get("api_error_status") == 429 or _LIMIT_TEXT.search(message) or rejected:
                 reset = _limit_reset(message) or next((x.get("resetsAt") or x.get("resets_at") for x in rejected), None)
                 raise UsageLimit(message.strip() or "usage limit", reset)
@@ -1026,7 +1058,7 @@ class CodexCLI:
         with tempfile.TemporaryDirectory(prefix="realist-codex-") as scratch:
             schema_path, out_path = Path(scratch, "schema.json"), Path(scratch, "last.json")
             schema_path.write_text(json.dumps(SCHEMA))
-            env = {k: v for k, v in os.environ.items() if k not in _CHILD_ENV_DROP}
+            env = child_env("codex")
             text = INSTRUCTIONS.replace("Read every photo file named in the message with the Read tool, then return",
                                         "Look at every attached photo, then return") + "\n\n" + CODEX_NOTE + "\n\n" + prompt
             try:
@@ -1048,7 +1080,7 @@ class CodexCLI:
                              "cache_read_input_tokens": u.get("cached_input_tokens", 0), "cache_creation_input_tokens": 0}
                 elif event.get("type") in ("turn.failed", "error"):
                     errors.append(json.dumps(event)[:500])
-            message = " ".join(errors) or (proc.stderr or "")[-500:]
+            message = redact(" ".join(errors) or (proc.stderr or "")[-500:])
             if errors or proc.returncode:
                 if _LIMIT_TEXT.search(message):
                     raise UsageLimit(message.strip() or "codex usage limit", _limit_reset(message))
@@ -1102,7 +1134,7 @@ def clean_item(value):
     if not isinstance(value, str):
         return None
     text = re.sub(r"\s+", " ", value).strip().lower()
-    if not text or len(text) > 30 or not _ITEM.fullmatch(text) or _SENSITIVE.search(text):
+    if not text or len(text) > 30 or not _ITEM.fullmatch(text) or not _publishable(text):
         return None
     return text
 
@@ -1156,7 +1188,7 @@ def validate_tags(tags, n_photos, repairs=None):
         if d["type"] not in DEFECT_WEIGHTS or type(d["photo_index"]) is not int or not 0 <= d["photo_index"] < n_photos:
             raise ValueError("defects: unknown type or photo")
         evidence = _short(d["evidence"])
-        if _SENSITIVE.search(evidence):
+        if not _publishable(evidence):
             continue
         clean["defects"].append({"type": d["type"], "item": clean_item(d.get("item")), "photo_index": d["photo_index"],
                                  "evidence": evidence, "confidence": _confidence(d["confidence"]), "box": _box(d["box"])})
@@ -1168,7 +1200,7 @@ def validate_tags(tags, n_photos, repairs=None):
         if not isinstance(c, dict) or set(c) != {"claim", "status"} or c["status"] not in statuses:
             raise ValueError("description_claims: malformed entry")
         claim = _short(c["claim"], 100)
-        if not _SENSITIVE.search(claim):
+        if _publishable(claim):
             clean["description_claims"].append({"claim": claim, "status": c["status"]})
     for name in V3_FIELDS:
         if not isinstance(tags[name], list):
@@ -1177,14 +1209,16 @@ def validate_tags(tags, n_photos, repairs=None):
     for item in tags["staging_labels"]:
         if not isinstance(item, dict) or set(item) != {"photo_index", "text"} or not _photo_ok(item["photo_index"], n_photos):
             raise ValueError("staging_labels: malformed entry")
-        clean["staging_labels"].append({"photo_index": item["photo_index"], "text": _short(item["text"], 80)})
+        text = _short(item["text"], 80)
+        if _publishable(text, sensitive=False):
+            clean["staging_labels"].append({"photo_index": item["photo_index"], "text": text})
     clean["edit_suspicions"] = []
     for item in tags["edit_suspicions"]:
         if (not isinstance(item, dict) or set(item) != {"photo_index", "kind", "evidence", "confidence"}
                 or not _photo_ok(item["photo_index"], n_photos) or item["kind"] not in EDIT_KINDS):
             raise ValueError("edit_suspicions: malformed entry")
         evidence = _short(item["evidence"])
-        if not _SENSITIVE.search(evidence):
+        if _publishable(evidence):
             clean["edit_suspicions"].append({"photo_index": item["photo_index"], "kind": item["kind"], "evidence": evidence,
                                              "confidence": _confidence(item["confidence"])})
     clean["same_room_empty_and_furnished"] = []
@@ -1445,13 +1479,41 @@ def photo_subject(home):
                 photoListingUrl=url if photos else None)
 
 
+PILLOW_FORMATS = ("JPEG", "PNG", "GIF", "WEBP")   # what sniff_image lets in; no other decoder (EPS, PSD...) is tried
+PILLOW_MAX_PIXELS = 60_000_000                   # a publisher photo is far smaller; bigger is a decompression bomb
+
+
+class SafeImage:
+    """Pillow's Image module for hostile files: ``open`` tries only PILLOW_FORMATS and refuses images over
+    PILLOW_MAX_PIXELS with ValueError (Pillow's own bomb guard only warns below twice its default limit, and raises
+    an exception the crop and shrink callers would not catch)."""
+
+    def __init__(self, Image):
+        self._Image = Image
+
+    def __getattr__(self, name):
+        return getattr(self._Image, name)
+
+    def open(self, path):
+        Image = self._Image
+        try:
+            im = Image.open(path, formats=PILLOW_FORMATS)
+        except getattr(Image, "DecompressionBombError", ValueError) as exc:
+            raise ValueError(f"image too large to decode: {exc}") from exc
+        width, height = im.size
+        if width * height > PILLOW_MAX_PIXELS:
+            im.close()
+            raise ValueError(f"image too large to decode ({width}x{height})")
+        return im
+
+
 def load_pillow():
-    """Pillow's Image module, or None. Optional: only the crop step needs it (``pip install pillow``)."""
+    """Pillow's Image module (wrapped in SafeImage), or None. Optional: only crops and shrinking need it."""
     try:
         from PIL import Image
     except ImportError:
         return None
-    return Image
+    return SafeImage(Image)
 
 
 def pillow_cropper(Image):
@@ -1461,18 +1523,25 @@ def pillow_cropper(Image):
 _MAGICK_FORMAT = {"jpg": "jpeg", "png": "png", "gif": "gif", "webp": "webp"}
 
 
+def magick_limits(timeout):
+    """ImageMagick resource limits for hostile files: memory, wall time, and image dimensions (a small file that
+    declares a huge canvas is refused instead of decoded)."""
+    return ["-limit", "memory", "256MiB", "-limit", "time", str(timeout), "-limit", "width", "16KP",
+            "-limit", "height", "16KP", "-limit", "area", "60MP"]
+
+
 def magick_cropper(binary, run=subprocess.run, timeout=20):
     """Crop with ImageMagick (``magick`` or ``convert``): argument list, no shell, explicit input format prefix so
     only the given file is read as that image type, ``-strip`` for metadata, JPEG out on stdout."""
     identify = [binary, "identify"] if Path(binary).name == "magick" else [shutil.which("identify") or "identify"]
-    limits = ["-limit", "memory", "256MiB", "-limit", "time", str(timeout)]
+    limits = magick_limits(timeout)
 
     def crop(path, box):
         fmt = _MAGICK_FORMAT.get(Path(path).suffix.lstrip(".").lower())
         if not fmt:
             raise ValueError("unsupported image type for crop")
         source = f"{fmt}:{Path(path).resolve()}[0]"
-        size = run(identify + ["-format", "%w %h", source], capture_output=True, timeout=timeout)
+        size = run(identify + limits + ["-format", "%w %h", source], capture_output=True, timeout=timeout)
         if size.returncode:
             raise ValueError("identify failed")
         width, height = (int(v) for v in size.stdout.decode().split()[:2])
@@ -1513,7 +1582,7 @@ def magick_shrinker(binary, run=subprocess.run, timeout=20):
         if not fmt:
             raise ValueError("unsupported image type for shrinking")
         side = HOLD_MAX_SIDE
-        out = run([binary, "-limit", "memory", "256MiB", "-limit", "time", str(timeout), f"{fmt}:{Path(path).resolve()}[0]",
+        out = run([binary] + magick_limits(timeout) + [f"{fmt}:{Path(path).resolve()}[0]",
                    "-resize", f"{side}x{side}>", "-strip", "-quality", str(HOLD_QUALITY), "jpeg:-"],
                   capture_output=True, timeout=timeout)
         if out.returncode or not out.stdout.startswith(b"\xff\xd8"):
@@ -2118,6 +2187,14 @@ def recut_small_crops(cache, homes, city, crop_store, cropper, hold=None, loader
     return changed
 
 
+_CROP_NAME = re.compile(r"[0-9a-f]{20}\.jpg")
+
+
+def crop_name_ok(name):
+    """A crop file name as make_crops writes it (20 hex digits of its hash + .jpg); anything else is ignored."""
+    return isinstance(name, str) and bool(_CROP_NAME.fullmatch(name))
+
+
 def _strip_crops(record):
     return [d.pop("crop") for d in (record.get("tags") or {}).get("defects") or [] if d.get("crop")]
 
@@ -2192,6 +2269,7 @@ def apply_retention(cache, today, crop_store, site_crops, history_path=None):
             removed.update(gone)
             changed |= bool(gone)
     keep = {d["crop"] for r in cache.values() for d in (r.get("tags") or {}).get("defects") or [] if d.get("crop")}
+    keep = {name for name in keep if crop_name_ok(name)}   # a name is a path: never "../" or anything but a hash
     for folder in {Path(crop_store), Path(site_crops)}:
         if folder.is_dir():
             for f in folder.glob("*.jpg"):
@@ -2217,14 +2295,14 @@ def _compact_photo(record, city, site_crops, facts=None, gallery_count=None, des
     for d in tags.get("defects") or []:
         item = {"type": d["type"], "photo": d.get("gallery_position"), "evidence": d.get("evidence", ""),
                 "confidence": d.get("confidence")}
-        if d.get("crop") and Path(site_crops, d["crop"]).exists():
+        if crop_name_ok(d.get("crop")) and Path(site_crops, d["crop"]).exists():
             item["crop"] = f"analysis/crops/{city}/{d['crop']}"
         defects.append(item)
     positions = record.get("positions") or []
     gallery = lambda i: positions[i] if isinstance(i, int) and 0 <= i < len(positions) else None
     cov = coverage(tags, facts or {}, gallery_count)
     score = condition_score(tags, cov["rating"], facts or {})
-    site_crop = lambda name: f"analysis/crops/{city}/{name}" if Path(site_crops, name).exists() else None
+    site_crop = lambda name: f"analysis/crops/{city}/{name}" if crop_name_ok(name) and Path(site_crops, name).exists() else None
     findings = []
     for f in group_findings(tags, facts or {}):
         shown = [(site_crop(c), m, p) for c, m, p in zip(f["crops"], f["marks"], f["points"]) if site_crop(c)]

@@ -8,7 +8,7 @@ import { rentLines, rentValue, yieldRange } from '../lib/rent'
 import MapView, { classOf, MapPoint, quintiles, SCALE } from '../components/MapView'
 import LineChart from '../charts/LineChart'
 import Sparkline from '../charts/Sparkline'
-import { Segmented, SortHead } from '../components/bits'
+import { revealOnPhone, Segmented, SortHead } from '../components/bits'
 import { activityPercentiles, blendOf, gradeOf, gradeStyle, percentiles, Ramp, Tier, tierOf, tierStyle, useRamp } from '../lib/grades'
 
 type Metric = 'price' | 'change' | 'yield' | 'violent' | 'property'
@@ -150,7 +150,7 @@ export default function AreasPage({ city, theme }: { city: City; theme: Theme })
               <p>Bigger circle = more homes sold in 12 months. Tap one for details.</p></div>
             <Segmented label="Map colour" value={metric} onChange={setMetric} options={METRICS.map((m) => ({ id: m.id, label: m.label }))} />
           </header>
-          <MapView center={city.center} zoom={city.zoom} points={points} theme={theme} selected={sel?.key ?? null} onSelect={(id) => setPicked(String(id))} />
+          <MapView center={city.center} zoom={city.zoom} points={points} theme={theme} selected={sel?.key ?? null} onSelect={(id) => { setPicked(String(id)); revealOnPhone(document.querySelector('.a-detail')) }} />
           <div className="map-legend">
             {LEGEND_ENDS[metric] && <span className="muted">{LEGEND_ENDS[metric]![0]}</span>}
             {[0, 1, 2, 3, 4].map((i) => (
@@ -201,7 +201,7 @@ export default function AreasPage({ city, theme }: { city: City; theme: Theme })
             </tr></thead>
             <tbody>
               {rows.map((a) => (
-                <tr key={a.key} className={`click ${a.key === sel?.key ? 'sel' : ''}`} onClick={() => setPicked(a.key)}>
+                <tr key={a.key} className={`click ${a.key === sel?.key ? 'sel' : ''}`} onClick={() => { setPicked(a.key); revealOnPhone(document.querySelector('.a-detail')) }}>
                   <td><b>{a.name}</b>{a.group && <span className="muted"> {a.group}</span>}{(a.zips ?? []).length > 0 && <span className="muted a-zip">{(a.zips ?? []).join(', ')}</span>}</td>
                   <td className="a-tier-col"><TierMark ramp={ramp} tier={standing.get(a.key)?.tier ?? null} /></td>
                   <td className="num">{usd(a.median12)}</td>

@@ -126,7 +126,7 @@ function load<T>(path: string): Promise<T> {
     cache.set(path, fetch(`data/${path}`).then((r) => {
       if (!r.ok) throw new Error(`Could not load ${path} (${r.status})`)
       return r.json()
-    }))
+    }).catch((e) => { cache.delete(path); throw e }))   // one shared copy per file; a failed load is retried next time
   }
   return cache.get(path) as Promise<T>
 }

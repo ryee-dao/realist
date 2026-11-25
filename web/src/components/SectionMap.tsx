@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react'
 import L from 'leaflet'
 import { City, Grid } from '../lib/data'
 import { cssVar, Theme } from '../lib/hooks'
+import { touchFriendly } from './MapView'
 
 /** How one area's cells are filled. `color` must be a resolved colour (canvas cannot read CSS variables). */
 export interface SectionFill { color: string; opacity?: number }
@@ -36,6 +37,7 @@ export default function SectionMap({ city, theme, grid, fillOf, tipOf, selected,
     }).addTo(m)
     m.on('click', () => m.scrollWheelZoom.enable())
     m.on('mouseout', () => m.scrollWheelZoom.disable())
+    touchFriendly(m)
     renderer.current = L.canvas({ padding: 0.5 })
     fill.current = L.layerGroup().addTo(m)
     outline.current = L.layerGroup().addTo(m)
@@ -48,24 +50,35 @@ export default function SectionMap({ city, theme, grid, fillOf, tipOf, selected,
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  // The cells are built once per grid; a change of weights or theme only recolours them (one canvas redraw),
+  // rather than tearing down and rebuilding some 1,500 layers on every slider step.
+  const cells = useRef<{ rect: L.Rectangle; ai: number }[]>([])
   useEffect(() => {
     const group = fill.current!
     group.clearLayers()
     const g = grid.columns
     const h = grid.cell / 2
-    const fills = new Map<number, SectionFill | null>()
+    const out: { rect: L.Rectangle; ai: number }[] = []
     for (let i = 0; i < g.lat.length; i++) {
       const ai = g.area[i]
       if (ai < 0) continue
-      if (!fills.has(ai)) fills.set(ai, fillOf(ai))
-      const f = fills.get(ai)
-      L.rectangle([[g.lat[i] - h, g.lon[i] - h], [g.lat[i] + h, g.lon[i] + h]], {
-        renderer: renderer.current!, stroke: false,
-        fillColor: f ? f.color : cssVar('--surface-2'), fillOpacity: f ? f.opacity ?? 0.85 : 0,
-      })
+      const rect = L.rectangle([[g.lat[i] - h, g.lon[i] - h], [g.lat[i] + h, g.lon[i] + h]], { renderer: renderer.current!, stroke: false, fillOpacity: 0 })
         .bindTooltip(() => tip.current(ai), { className: 'map-tip', sticky: true })
         .on('click', (e) => { L.DomEvent.stopPropagation(e); select.current(ai) })
         .addTo(group)
+      out.push({ rect, ai })
+    }
+    cells.current = out
+  }, [grid])
+
+  useEffect(() => {
+    const fills = new Map<number, SectionFill | null>()
+    const none = cssVar('--surface-2')
+    for (const { rect, ai } of cells.current) {
+      if (!fills.has(ai)) fills.set(ai, fillOf(ai))
+      const f = fills.get(ai)
+      const fillColor = f ? f.color : none, fillOpacity = f ? f.opacity ?? 0.85 : 0
+      if (rect.options.fillColor !== fillColor || rect.options.fillOpacity !== fillOpacity) rect.setStyle({ fillColor, fillOpacity })
     }
   }, [grid, fillOf, theme])
 
@@ -95,4 +108,4 @@ export default function SectionMap({ city, theme, grid, fillOf, tipOf, selected,
   return <div ref={el} className={`map ${className}`} style={height ? { height } : undefined} />
 }
 
-export const escapeHtml = (s: string) => s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]!))
+export { escapeHtml } from '../lib/safeUrl'

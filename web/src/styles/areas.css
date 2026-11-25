@@ -26,6 +26,8 @@ button.a-row:focus-visible { outline: 2px solid var(--brand); outline-offset: -2
 .a-kv-note { margin: 0 0 10px; font-size: 11.5px; color: var(--muted); }
 
 /* ---- all-areas table: keep the sticky header above the grade squares scrolling beneath it ---- */
+/* performance: the 130-row table is painted on its own, so changing the map colour does not repaint it (~6x less paint) */
+.a-table-card { contain: layout paint; }
 .a-table-card table.data thead th { z-index: 3; }
 .a-table-card table.data th, .a-table-card table.data td { padding-inline: 8px; }
 .a-table-card .a-zip { display: block; font-size: 11.5px; }
@@ -40,3 +42,15 @@ button.a-row:focus-visible { outline: 2px solid var(--brand); outline-offset: -2
 .a-table-card table.data th .sort { white-space: normal; text-align: inherit; }
 .a-table-card table.data td:first-child { white-space: normal; min-width: 130px; max-width: 170px; }
 @media (min-width: 900px) { .a-table-card table.data th, .a-table-card table.data td { padding-inline: 6px; } }
+
+.a-detail { scroll-margin-top: 12px; }
+/* phones: the area name stays pinned while the figures scroll sideways */
+@media (max-width: 560px) {
+  .a-table-card table.data th:first-child, .a-table-card table.data td:first-child { position: sticky; left: 0; z-index: 1; background: var(--surface); box-shadow: inset -1px 0 0 var(--line); min-width: 118px; max-width: 132px; }
+  .a-table-card table.data thead th:first-child { z-index: 4; }
+  .a-table-card table.data tr.sel td:first-child { background: var(--brand-soft); }
+  .a-table-card table.data tr.click:hover td:first-child { background: var(--surface-2); }
+  .a-table-card table.data tr.sel:hover td:first-child { background: var(--brand-soft); }
+}
+/* phones: a shorter map so the detail is a short scroll away (the page scrolls past it with one finger) */
+@media (max-width: 560px) { .a-map-card .map { height: 360px !important; } }

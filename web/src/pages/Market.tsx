@@ -8,7 +8,7 @@ import LineChart, { LineSeries } from '../charts/LineChart'
 import ColumnChart from '../charts/ColumnChart'
 import Sparkline from '../charts/Sparkline'
 import { yearTicks } from '../charts/scale'
-import { Delta, Segmented, StatTile, TYPE_COLOR } from '../components/bits'
+import { Delta, placeTip, Segmented, StatTile, TYPE_COLOR } from '../components/bits'
 
 type Range = '3y' | '5y' | 'all'
 const RANGE_MONTHS: Record<Range, number> = { '3y': 36, '5y': 60, all: 10000 }
@@ -180,7 +180,7 @@ const FEW_MSG = 'Too few sales — data might be incomplete or inaccurate'
 /** Small warning marker; hover or tap (focus) shows the message. */
 function Few({ on = true }: { on?: boolean }) {
   if (!on) return null
-  return <button type="button" className="few-mark" aria-label={FEW_MSG} data-tip={FEW_MSG}>!</button>
+  return <button type="button" className="few-mark" aria-label={FEW_MSG} data-tip={FEW_MSG} onFocus={placeTip} onPointerEnter={placeTip} onPointerDown={placeTip}>!</button>
 }
 
 /** One area: recorded sales only. Every figure is shown; those resting on few sales carry a warning marker. */

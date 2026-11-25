@@ -55,24 +55,46 @@ function guard<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
 async function engine(onProgress: (p: Progress) => void): Promise<duckdb.AsyncDuckDB> {
   if (typeof WebAssembly !== 'object' || typeof Worker !== 'function') throw new Error('This browser cannot run WebAssembly in a worker.')
   const bundle = await duckdb.selectBundle(BUNDLES)
-  const worker = new Worker(bundle.mainWorker!)
+  // The worker starts from a blob: URL that imports the real script, so it inherits this page's
+  // Content-Security-Policy (connect-src 'self'): SQL such as read_csv('https://elsewhere/…') or INSTALL cannot reach
+  // another origin. A worker started from its own URL would only get its response's policy (none on GitHub Pages).
+  const boot = URL.createObjectURL(new Blob([`importScripts(${JSON.stringify(abs(bundle.mainWorker!))});`], { type: 'text/javascript' }))
+  const worker = new Worker(boot)
   activeWorker = worker
   watch(worker)
   const db = new duckdb.AsyncDuckDB(new duckdb.VoidLogger(), worker)
   try {
-    await db.instantiate(bundle.mainModule, bundle.pthreadWorker, (p) => onProgress({ stage: 'engine', loaded: p.bytesLoaded, total: p.bytesTotal }))
+    await db.instantiate(abs(bundle.mainModule), bundle.pthreadWorker && abs(bundle.pthreadWorker), (p) => onProgress({ stage: 'engine', loaded: p.bytesLoaded, total: p.bytesTotal }))
+    URL.revokeObjectURL(boot)
     // plain JS numbers out: no BigInt or Decimal objects in result rows
     await db.open({
       query: { castBigIntToDouble: true, castDecimalToDouble: true, castTimestampToDate: true },
       // read Parquet by HTTP range requests; fall back to one full download only if the server cannot serve ranges
       filesystem: { reliableHeadRequests: false, allowFullHTTPReads: true, forceFullHTTPReads: false },
+      allowUnsignedExtensions: false,
     })
+    await lockDown(db)
   } catch (e) {
     if (activeWorker === worker) reset()
     else worker.terminate()
     throw e
   }
   return db
+}
+
+/** The configuration is locked (SET / RESET fail), so hand-written or shared SQL cannot point the extension
+ *  repository elsewhere or change any other setting. Extensions still load on demand (read_parquet needs the parquet
+ *  extension), but only DuckDB's signed ones (unsigned are refused at open), and the page's CSP lets the worker reach
+ *  only this site and extensions.duckdb.org. */
+const LOCKDOWN = ['SET lock_configuration = true']
+
+async function lockDown(db: duckdb.AsyncDuckDB) {
+  const c = await db.connect()
+  try {
+    for (const sql of LOCKDOWN) await c.query(sql)
+  } finally {
+    await c.close()
+  }
 }
 
 function getDb(onProgress: (p: Progress) => void) {

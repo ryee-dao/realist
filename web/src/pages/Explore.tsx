@@ -289,7 +289,9 @@ export default function Explore({ city }: { city: City }) {
   const [filters, setFilters] = useState<Filters>(() => filtersFromHash(initial))
   const [view, setView] = useState<View>(() => viewFromHash(initial))
   const [page, setPage] = useState(0)
-  const [mode, setMode] = useState<Mode>(() => (initial.get('sql') ? 'sql' : ASKS.find((a) => a.id === initial.get('ask') && a.sql)?.id ?? 'search'))
+  // A query in a shared link is shown in the SQL box but never runs by itself: the visitor reads it and presses Run.
+  const [shared, setShared] = useState(!!initial.get('sql'))
+  const [mode, setMode] = useState<Mode>(() => (initial.get('sql') ? 'search' : ASKS.find((a) => a.id === initial.get('ask') && a.sql)?.id ?? 'search'))
   const [preset, setPreset] = useState<string | null>(() => ASKS.find((a) => a.id === initial.get('ask') && a.preset)?.id ?? null)
   const [sql, setSql] = useState(initial.get('sql') ?? '')
   const [seed, setSeed] = useState(initial.get('sql') ?? '')   // what the SQL box starts from
@@ -358,7 +360,7 @@ export default function Explore({ city }: { city: City }) {
   const where = useMemo(() => (latest ? whereSql(filters, latest) : ''), [filters, latest])
 
   // keep the link in step with what is on screen
-  useEffect(() => { writeHash(stateToHash(filters, view, mode, sql, scope, preset)) }, [filters, view, mode, sql, scope, preset])
+  useEffect(() => { writeHash(stateToHash(filters, view, shared && mode === 'search' ? 'sql' : mode, sql, scope, preset)) }, [filters, view, mode, sql, scope, preset, shared])
 
   // lock the page behind the phone drawer
   useEffect(() => {
@@ -568,7 +570,8 @@ export default function Explore({ city }: { city: City }) {
               <button className="ghost small" disabled={!ready} onClick={() => setSeed(mode === 'search' ? listSql(where, view.order) : activeAsk?.sql?.(latest) ?? sql)}>Start from what is on screen</button>
             </div>
             <SqlBox initial={seed} disabled={!ready} busy={!!busy}
-              onRun={(text) => { setSql(text); setPreset(null); setMode('sql') }} onCancel={cancel} />
+              onRun={(text) => { setShared(false); setSql(text); setPreset(null); setMode('sql') }} onCancel={cancel} />
+            {shared && <p className="muted">This link came with a query. Read it, then press Run.</p>}
           </div>
           <Schema noun={noun} />
         </div>

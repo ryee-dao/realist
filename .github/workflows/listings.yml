@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: read      # no job here pushes; the cache is written with the runner's own cache token
 
 concurrency:
   group: live-listings-harvest
@@ -19,14 +19,30 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 18
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262   # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065   # v5.6.0
         with:
           python-version: "3.12"
-      - uses: actions/cache/restore@v4
+      # The cache holds publishers' descriptions and photo links; it is carried sealed (.github/scripts/sealed-cache.sh)
+      # because pull-request workflows can restore this branch's caches.
+      - id: sealed
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830   # v4.3.0
+        with:
+          path: sealed/listings
+          key: listings-v2-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: listings-v2-
+      - name: Open the listings cache
+        env:
+          REALIST_CACHE_KEY: ${{ secrets.REALIST_CACHE_KEY }}
+        run: bash .github/scripts/sealed-cache.sh open harvested-listings sealed/listings
+      # One-time move from the old unsealed cache (listings-v1-, expires after 7 idle days): keeps the rotation state.
+      - if: steps.sealed.outputs.cache-matched-key == ''
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830   # v4.3.0
         with:
           path: harvested-listings
-          key: listings-v1-${{ github.run_id }}-${{ github.run_attempt }}
+          key: listings-v1-none
           restore-keys: listings-v1-
       # Homes harvested elsewhere, slimmed to facts the site already shows (python -m engine.live_listings
       # --export-seed), pushed to listing-seed/ on the data branch. Only homes the store does not hold are added,
@@ -68,16 +84,18 @@ jobs:
               print(f"| {city} | {snapshot.get('source', '—')} | {status} | {len(rows)} | "
                     f"{sum(bool(r.get('photos')) for r in rows)} | {sum(bool(r.get('description')) for r in rows)} |")
           PYTHON
-      - uses: actions/cache/save@v4
+      # No downloadable artifact: in a public repository anyone signed in could download publishers' full text.
+      - name: Seal the listings cache
+        if: always()
+        env:
+          REALIST_CACHE_KEY: ${{ secrets.REALIST_CACHE_KEY }}
+        run: |
+          test -d harvested-listings || { echo "::error::No harvested-listings output"; exit 1; }
+          bash .github/scripts/sealed-cache.sh seal harvested-listings sealed/listings
+      - uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830   # v4.3.0
         if: always()
         with:
-          path: harvested-listings
-          key: listings-v1-${{ github.run_id }}-${{ github.run_attempt }}
-      - uses: actions/upload-artifact@v4
-        with:
-          name: live-listings
-          path: harvested-listings/
-          retention-days: 2
-          if-no-files-found: error
+          path: sealed/listings
+          key: listings-v2-${{ github.run_id }}-${{ github.run_attempt }}
       - if: steps.listings.outcome == 'failure'
         run: exit 1

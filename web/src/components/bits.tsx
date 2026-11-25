@@ -1,6 +1,19 @@
 import { ReactNode } from 'react'
 import { pct } from '../lib/format'
 
+/** Phones stack the detail panel away from the map and table that select it: bring it into view after a pick.
+ *  'nearest' leaves it alone when it is already on screen. */
+/** The yellow "!" marks: remember where the mark sits so its tip can open within the screen on phones (styles.css). */
+export function placeTip(e: { currentTarget: HTMLElement }) {
+  e.currentTarget.style.setProperty('--tip-x', `${Math.round(e.currentTarget.getBoundingClientRect().left)}px`)
+}
+
+export function revealOnPhone(el: Element | null | undefined) {
+  if (!el || window.innerWidth >= 900) return
+  const smooth = !window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
+  requestAnimationFrame(() => el.scrollIntoView({ block: 'nearest', behavior: smooth ? 'smooth' : 'auto' }))
+}
+
 /** A change figure. Rising prices are not "good" or "bad", so direction is shown by arrow, not colour. */
 export function Delta({ value, suffix, points, short }: {
   value: number | null | undefined; suffix?: string

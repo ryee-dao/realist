@@ -8,6 +8,7 @@ home's size, type and assessed value attached.
 import datetime as dt
 from collections import Counter
 
+from ..http import sql_int
 from ..schema import CONDO, MULTI, SINGLE, title
 from . import SourceRun
 
@@ -89,7 +90,7 @@ def harvest(ctx):
             run.add(sale)
         if len(rows) < PAGE:
             break
-        last = rows[-1]["cid"]
+        last = sql_int(rows[-1]["cid"])
     run.finish()
     reach = (dt.date.fromisoformat(newest) - dt.timedelta(days=TAIL_DAYS)).isoformat() if newest else ctx.since
     harvest_property_records(ctx, multi, docs, sold, reach)
@@ -151,7 +152,7 @@ def harvest_property_records(ctx, multi=frozenset(), docs=frozenset(), sold=None
         pulled += rows
         if len(rows) < PAGE:
             break
-        last = rows[-1]["cid"]
+        last = sql_int(rows[-1]["cid"])
     # forced sales are not market prices, and they would skew recent months (a foreclosed home is soon resold)
     forced = {str(r["doc"]) for r in ctx.client.get_json(API, {"q": FORCED_SQL.format(since=ctx.since)}).get("rows", [])}
     seen = Counter(r.get("doc") for r in pulled)

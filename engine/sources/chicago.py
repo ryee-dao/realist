@@ -7,7 +7,7 @@ and only fetched for parcels the engine has not seen before.
 """
 import re
 
-from ..http import socrata_pages, socrata_updated_at
+from ..http import socrata_pages, socrata_updated_at, sql_text
 from ..schema import CONDO, MULTI, SINGLE, title, to_int
 from . import SourceRun
 
@@ -44,7 +44,7 @@ def _fetch_by_pin(ctx, dataset, select, pins, bulk_where, year_clause=""):
                 yield row
         return
     for i in range(0, len(pins), BATCH):
-        chunk = ",".join(f"'{p}'" for p in pins[i:i + BATCH])
+        chunk = ",".join(sql_text(p) for p in pins[i:i + BATCH])
         where = f"pin in ({chunk})" + (f" and {year_clause}" if year_clause else "")
         yield from socrata_pages(ctx.client, BASE, dataset, select, where)
 

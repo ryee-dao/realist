@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react'
 import L from 'leaflet'
 import '../styles/scales.css'
 import { cssVar, Theme } from '../lib/hooks'
+import { escapeHtml } from '../lib/safeUrl'
 
 export interface MapPoint {
   id: string | number
@@ -25,6 +26,21 @@ interface Props {
 // OpenStreetMap's standard tiles; the dark theme tones them down with a CSS filter (see styles.css).
 const TILES = 'https://tile.openstreetmap.org/{z}/{x}/{y}.png'
 
+/** On touch screens a map inside a long page must not trap scrolling: one finger scrolls the page,
+ *  two fingers move and zoom the map (Leaflet's pinch follows the fingers), and a one-finger drag
+ *  briefly shows a hint saying so (styles.css, .map-hint). */
+export function touchFriendly(m: L.Map) {
+  if (!(L.Browser.mobile || window.matchMedia?.('(pointer: coarse)').matches)) return
+  m.dragging.disable()
+  const box = m.getContainer()
+  let t = 0
+  box.addEventListener('touchmove', (e) => {
+    box.classList.toggle('map-hint', e.touches.length === 1)
+    window.clearTimeout(t)
+    t = window.setTimeout(() => box.classList.remove('map-hint'), 1200)
+  }, { passive: true })
+}
+
 export default function MapView({ center, zoom, points, theme, selected, onSelect, height = 460 }: Props) {
   const el = useRef<HTMLDivElement>(null)
   const map = useRef<L.Map | null>(null)
@@ -37,6 +53,7 @@ export default function MapView({ center, zoom, points, theme, selected, onSelec
     const m = L.map(el.current!, { preferCanvas: true, scrollWheelZoom: false, zoomSnap: 0.5 }).setView(center, zoom)
     m.on('click', () => m.scrollWheelZoom.enable())
     m.on('mouseout', () => m.scrollWheelZoom.disable())
+    touchFriendly(m)
     layer.current = L.layerGroup().addTo(m)
     map.current = m
     return () => { m.remove(); map.current = null; tiles.current = null }
@@ -63,7 +80,7 @@ export default function MapView({ center, zoom, points, theme, selected, onSelec
         radius: p.radius + (on ? 2 : 0), fillColor: p.color, fillOpacity: 0.9,
         color: on ? ink : ring, weight: on ? 2.5 : 1,
       })
-        .bindTooltip(p.tip, { direction: 'top', offset: [0, -p.radius], className: 'map-tip' })
+        .bindTooltip(escapeHtml(p.tip), { direction: 'top', offset: [0, -p.radius], className: 'map-tip' })   // Leaflet reads a string as HTML
         .on('click', (e) => { L.DomEvent.stopPropagation(e); select.current?.(p.id) })
         .addTo(group)
     }

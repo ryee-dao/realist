@@ -13,7 +13,7 @@ import hashlib
 import re
 from collections import Counter, defaultdict
 
-from ..http import socrata_pages, socrata_updated_at
+from ..http import socrata_pages, socrata_updated_at, sql_date
 from ..schema import CONDO, COOP, MIN_PRICE, MULTI, SINGLE, clean_text, title
 from . import SourceRun
 
@@ -94,7 +94,7 @@ def harvest(ctx):
         start = ctx.since if ctx.full else ctx.state.get("backfill_start", ctx.since)
         max_date = ""
         for row in socrata_pages(ctx.client, BASE, ANNUAL, FIELDS + ", latitude, longitude",
-                                 f"sale_date >= '{start}'"):
+                                 f"sale_date >= '{sql_date(start)}'"):
             max_date = max(max_date, str(row.get("sale_date") or "")[:10])
             run.add(normalize(run.norm, row))
         run.finish()
@@ -108,7 +108,7 @@ def harvest(ctx):
     else:
         cutoff = ctx.state.get("annual_max_date", "")
         max_date = cutoff
-        for row in socrata_pages(ctx.client, BASE, ROLLING, FIELDS, f"sale_date > '{cutoff}'" if cutoff else ""):
+        for row in socrata_pages(ctx.client, BASE, ROLLING, FIELDS, f"sale_date > '{sql_date(cutoff)}'" if cutoff else ""):
             max_date = max(max_date, str(row.get("sale_date") or "")[:10])
             run.add(normalize(run.norm, row))
         run.finish()
@@ -238,7 +238,7 @@ def harvest_deeds(ctx, reach):
         return run.skip("source unchanged since last pull")
     types = _in(DEED_TYPES)
     masters = list(socrata_pages(ctx.client, BASE, MASTER, "document_id, doc_type, document_date, document_amt",
-                                 f"doc_type in ({types}) and document_date > '{reach}T23:59:59' and document_amt >= {MIN_PRICE}"))
+                                 f"doc_type in ({types}) and document_date > '{sql_date(reach)}T23:59:59' and document_amt >= {MIN_PRICE}"))
     legals = defaultdict(list)
     ids = sorted({m["document_id"] for m in masters})
     for i in range(0, len(ids), BATCH):
@@ -254,6 +254,8 @@ def harvest_deeds(ctx, reach):
             continue
         l = L[0]
         if not _parcel(l) or _parcel(l) in known:
+            continue
+        if str(l["borough"]).strip() not in BOROUGHS:   # pasted into the PLUTO queries below
             continue
         if l.get("property_type") == "SC":
             need_blocks.add((str(l["borough"]).strip(), int(l["block"])))

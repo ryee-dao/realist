@@ -35,6 +35,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -46,6 +47,8 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from .netguard import urlopen_public
+
 HOLD_DIR = Path("photo-hold")
 MAX_BYTES = 2_000_000_000
 MAX_HOLD_DAYS = 14
@@ -55,6 +58,7 @@ MANIFEST = "hold-manifest.json"   # marker file name the publish guard looks for
 USER_AGENT = "Realist/2.0 (public housing data research)"
 ROBOTS_AGENT = "Realist"
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
+HELD_NAME = re.compile(r"p\d{2,4}\.(?:jpg|jpeg|png|gif|webp)")
 CROP_MAX_BYTES = 200_000          # a published crop is a <= 320 px JPEG; anything bigger is not a crop
 
 
@@ -92,7 +96,7 @@ class Robots:
     def _read(url):
         request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
         try:
-            with urllib.request.urlopen(request, timeout=12) as resp:
+            with urlopen_public(request, timeout=12) as resp:   # the host comes from a publisher's photo URL
                 return resp.read(500_000).decode("utf-8", "replace")
         except urllib.error.HTTPError as exc:
             if exc.code == 404 or exc.code == 410:
@@ -148,7 +152,9 @@ class PhotoHold:
     # ---- reading -------------------------------------------------------------------------------------------
     def held(self, city, listing_url, photo_url):
         entry = self.manifest(city, listing_url)["photos"].get(photo_url) or {}
-        path = self._dir(city, listing_url) / entry["file"] if entry.get("file") else None
+        name = entry.get("file")
+        # the manifest names a file in this listing's folder, as fetch writes it (p00.jpg); never a path
+        path = self._dir(city, listing_url) / name if isinstance(name, str) and HELD_NAME.fullmatch(name) else None
         return path if path and path.is_file() else None
 
     def ready(self, city, listing_url, photo_urls):

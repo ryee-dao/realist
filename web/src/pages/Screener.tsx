@@ -1,12 +1,12 @@
 import '../styles/finder.css'
-import { useMemo, useRef, useState } from 'react'
+import { useDeferredValue, useMemo, useRef, useState } from 'react'
 import { Area, Areas, City, Grid, Listings, useData } from '../lib/data'
 import { cssVar, Theme } from '../lib/hooks'
 import { monthLabel, num, pct, usd, usdCompact } from '../lib/format'
 import { rentLines, yieldRange } from '../lib/rent'
 import { activityPercentiles, gradeOf, gradeStyle, percentiles, rankPool, Tier, TIER_SEQ, TIERS, tierStyle, useRamp, WEAK_BELOW } from '../lib/grades'
 import SectionMap, { escapeHtml, SectionFill } from '../components/SectionMap'
-import { Segmented, SortHead } from '../components/bits'
+import { revealOnPhone, Segmented, SortHead } from '../components/bits'
 
 type Factor = 'yield' | 'growth1' | 'growth5' | 'price' | 'activity' | 'crime'
 type Weights = Record<Factor, number>
@@ -91,25 +91,28 @@ export default function ScreenerPage({ city, theme }: { city: City; theme: Theme
   const ramp = useRamp(theme)
   const detailRef = useRef<HTMLElement>(null)
   const [allTiers, setAllTiers] = useState(false)
+  // The controls answer at once; the scoring, tier list, map and table follow from these deferred copies, so a slider
+  // drag or typing a price skips the in-between results instead of queueing a full re-render for each.
+  const dw = useDeferredValue(w), dmust = useDeferredValue(must), dbudget = useDeferredValue(budget), dmin = useDeferredValue(minSales)
 
   // percentile of each area within the pool, per factor (mid-rank, ties share a percentile)
   const pool = useMemo(() => {
-    const max = parseFloat(budget) || Infinity
-    const list = (data?.areas ?? []).filter((a) => a.median12 != null && a.median12 <= max && a.sales12 >= minSales)
+    const max = parseFloat(dbudget) || Infinity
+    const list = (data?.areas ?? []).filter((a) => a.median12 != null && a.median12 <= max && a.sales12 >= dmin)
     const pc = FACTORS.map((f) => f.id === 'activity'
       ? activityPercentiles(list, (a) => a.key, (a) => a.sales12, [(a) => a.listings?.active ?? null, (a) => a.listings?.newListings ?? null])
       : percentiles(list, (a) => a.key, (a) => raw(a, f.id)))
     return list.map((a) => ({ area: a, key: a.key, pctl: Object.fromEntries(IDS.flatMap((id, i) => (pc[i].has(a.key) ? [[id, pc[i].get(a.key)]] : []))) as Partial<Record<Factor, number>> }))
-  }, [data, budget, minSales])
+  }, [data, dbudget, dmin])
 
   const { scored, hidden } = useMemo(() => {
     const byKey = new Map(pool.map((r) => [r.key, r]))
-    const r = rankPool(pool, IDS, w, must)
+    const r = rankPool(pool, IDS, dw, dmust)
     return {
       scored: r.ranked.map((x): Scored => ({ area: byKey.get(x.key)!.area, pctl: byKey.get(x.key)!.pctl, score: x.score, rank: x.rank, tier: x.tier, missing: x.incomplete, demoted: x.demoted })),
       hidden: r.hidden.map((h) => ({ area: byKey.get(h.key)!.area, reasons: h.reasons })),
     }
-  }, [pool, w, must])
+  }, [pool, dw, dmust])
 
   // the map: every area as a filled section, coloured by tier; areas left out by the filters or must-haves are muted
   const { data: grid } = useData<Grid>(`${city.id}/grid.json`)
@@ -150,7 +153,7 @@ export default function ScreenerPage({ city, theme }: { city: City; theme: Theme
 
   if (!data) return <div className="loading">Loading areas…</div>
 
-  const active = FACTORS.filter((f) => w[f.id] > 0)
+  const active = FACTORS.filter((f) => dw[f.id] > 0)
   const apply = (id: string) => { setPreset(id); setW(PRESETS.find((p) => p.id === id)!.w); setMust([]) }
   const toggleMust = (f: Factor) => setMust((m) => (m.includes(f) ? m.filter((x) => x !== f) : [...m, f]))
   const short = (f: Factor) => FACTORS.find((x) => x.id === f)!.short.toLowerCase()
@@ -227,7 +230,7 @@ export default function ScreenerPage({ city, theme }: { city: City; theme: Theme
         <section className="card">
           {grid ? <SectionMap city={city} theme={theme} grid={grid} fillOf={fillOf} tipOf={tipOf} height={window.innerWidth < 600 ? 300 : 420}
               selected={sel ? data.areas.indexOf(sel.area) : null}
-              onSelect={(ai) => { const a = data.areas[ai]; if (a && scored.some((s) => s.area.key === a.key)) setPicked(a.key) }} />
+              onSelect={(ai) => { const a = data.areas[ai]; if (a && scored.some((s) => s.area.key === a.key)) { setPicked(a.key); revealOnPhone(detailRef.current) } }} />
             : <div className="map loading" style={{ height: window.innerWidth < 600 ? 300 : 420 }}>Loading the map…</div>}
           <div className="map-legend">
             {TIERS.map((t) => <span key={t}><i className="key-box" style={{ background: ramp[TIER_SEQ[t]].bg }} />{t} tier</span>)}
@@ -256,7 +259,7 @@ export default function ScreenerPage({ city, theme }: { city: City; theme: Theme
             )}
             <div className="f-facts">
               {FACTORS.map((f) => {
-                const on = w[f.id] > 0
+                const on = dw[f.id] > 0
                 const v = f.id === 'activity' && sel.area.listings?.active != null ? `${num(sel.area.sales12)} sold · ${num(sel.area.listings.active)} for sale` : value(sel.area, f.id)
                 return (
                   <div className={`f-fact ${on ? '' : 'off'}`} key={f.id} title={f.id === 'yield' && sel.area.rent != null ? [...rentLines(sel.area, city.context), yieldRange(sel.area)].filter(Boolean).join('\n') : f.hint}>
@@ -290,7 +293,7 @@ export default function ScreenerPage({ city, theme }: { city: City; theme: Theme
                 {rows.map((s) => {
                   const sub = [s.area.group, s.area.zips.join(' ')].filter(Boolean).join(' · ')
                   return (
-                    <tr key={s.area.key} className={`click ${s.area.key === sel?.area.key ? 'sel' : ''}`} onClick={() => setPicked(s.area.key)}>
+                    <tr key={s.area.key} className={`click ${s.area.key === sel?.area.key ? 'sel' : ''}`} onClick={() => { setPicked(s.area.key); revealOnPhone(detailRef.current) }}>
                       <td className="rank">{s.rank}</td>
                       <td className="f-name" title={`${s.area.name}${sub ? ` · ${sub}` : ''}`}><b>{s.area.name}</b>{s.missing.length > 0 && <span className="f-inc" title={`Incomplete: no ${s.missing.map(short).join(', ')} data, counted at the city median`}>*</span>}{sub && <span className="muted f-name-sub"> {sub}</span>}</td>
                       <td><span className="f-ts">{tierBadge(s.tier)}<b>{s.score}</b><span className="mini"><i style={{ width: `${s.score}%` }} /></span></span></td>

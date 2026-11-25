@@ -17,7 +17,7 @@ import datetime as dt
 import math
 import re
 
-from .http import FetchError
+from .http import FetchError, sql_int
 from .schema import CONDO, MULTI, SINGLE, to_int
 
 PHL_API = "https://phl.carto.com/api/v2/sql"
@@ -163,7 +163,7 @@ def harvest_philadelphia(ctx, report, city="philadelphia"):
             report["kept"] += 1
         if len(rows) < PHL_PAGE:
             break
-        last = rows[-1]["cid"]
+        last = sql_int(rows[-1]["cid"])
     if not out:
         raise FetchError("no characteristics matched the stored sales")
     report["new"] = sum(1 for k in out if k not in held)
@@ -212,7 +212,7 @@ def harvest_assessment_history(ctx, report, city="philadelphia"):
             report["kept"] += 1
         if len(rows) < PHL_PAGE:
             break
-        last = rows[-1]["p"]
+        last = str(rows[-1]["p"]).replace("'", "''")   # inside quotes in HISTORY_SQL
     if not out:
         raise FetchError("no assessment history matched the stored sales")
     report["new"] = sum(1 for k in out if k not in held)

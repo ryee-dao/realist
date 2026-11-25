@@ -9,6 +9,7 @@ import { activityPercentiles, percentiles, rankPool, Tier, TIERS, tierStyle, use
 import ListingsMap, { ListingPin } from '../components/ListingsMap'
 import ListingPanel from '../components/ListingPanel'
 import { Breakdown, Card, CardsDoc, CropImage, Item, LOW_MSG, money, monthYear, shortDate, WarnMark } from '../components/listingParts'
+import { safeUrl } from '../lib/safeUrl'
 
 // ---- area tiers: the Find areas factors and maths (lib/grades.ts), with this page's own saved weights ----
 type Factor = 'yield' | 'growth1' | 'growth5' | 'price' | 'activity' | 'crime'
@@ -128,7 +129,10 @@ export default function NewListings({ city }: { city: City }) {
 
   const hiddenSet = useMemo(() => new Set(hidden), [hidden])
   const hiddenCount = (data?.cards ?? []).filter((c) => hiddenSet.has(c.id)).length
+  // the filter fields only: paging and opening a home must not re-filter (and so re-pin the map)
+  const { min: fMin, max: fMax, beds: fBeds, baths: fBaths, tier: fTier, cond: fCond, est: fEst, th: fTh, sort: fSort } = f
   const filtered = useMemo(() => {
+    const f = { min: fMin, max: fMax, beds: fBeds, baths: fBaths, tier: fTier, cond: fCond, est: fEst, th: fTh, sort: fSort }
     const min = +f.min || 0, max = +f.max || Infinity, th = +f.th || 10
     const tierMax = f.tier ? TIERS.indexOf(f.tier as Tier) : 4
     const out = (data?.cards ?? []).filter((c) => {
@@ -153,11 +157,11 @@ export default function NewListings({ city }: { city: City }) {
       gap: (a: Card, b: Card) => (a.estimate?.vsPct ?? Infinity) - (b.estimate?.vsPct ?? Infinity),
     }[f.sort] ?? (() => 0)
     return out.sort(by)
-  }, [data, f, tiers, hiddenSet, showHidden])
+  }, [data, fMin, fMax, fBeds, fBaths, fTier, fCond, fEst, fTh, fSort, tiers, hiddenSet, showHidden])
 
   const pages = Math.max(1, Math.ceil(filtered.length / PER_PAGE))
   const page = Math.min(pages, Math.max(1, +f.page || 1))
-  const cards = filtered.slice((page - 1) * PER_PAGE, page * PER_PAGE)
+  const cards = useMemo(() => filtered.slice((page - 1) * PER_PAGE, page * PER_PAGE), [filtered, page])
   const onPage = useMemo(() => new Set(cards.map((c) => c.id)), [cards])
   const pins: ListingPin[] = useMemo(() => {
     const all = filtered.filter((c) => c.lat != null && c.lon != null).map((c) => ({
@@ -331,7 +335,7 @@ function ListingCard({ c, on, onHover, city, tiers, ramp, daysSince, hiddenSet, 
       <Headline c={c} city={city} />
     </div>
     <div className="lc-addr"><button className="lc-open" onClick={() => onOpen(c.id)}>{c.address ?? 'Address not given'}</button>
-      <a className="lc-ext" href={c.url} target="_blank" rel="noopener noreferrer" title={`Open on ${c.links[0]?.source ?? 'the publisher'}`} aria-label="Open the publisher's listing">↗</a></div>
+      <a className="lc-ext" href={safeUrl(c.url)} target="_blank" rel="noopener noreferrer" title={`Open on ${c.links[0]?.source ?? 'the publisher'}`} aria-label="Open the publisher's listing">↗</a></div>
     {facts && <div className="muted lc-small">{facts}</div>}
     {c.area && <div className="lc-area">
       {t ? <span className="f-tier" style={tierStyle(t, ramp)} aria-hidden="true">{t}</span> : null}
@@ -345,7 +349,7 @@ function ListingCard({ c, on, onHover, city, tiers, ramp, daysSince, hiddenSet, 
     </div> : null}
     {photoCity && c.photo && <Photos c={c} />}
     <div className="lc-foot">
-      <span className="lc-small">{c.links.map((l, i) => <span key={l.url}>{i ? ' · ' : ''}<a href={l.url} target="_blank" rel="noopener noreferrer">{l.source ?? 'Listing'} ↗</a></span>)}</span>
+      <span className="lc-small">{c.links.map((l, i) => <span key={l.url}>{i ? ' · ' : ''}<a href={safeUrl(l.url)} target="_blank" rel="noopener noreferrer">{l.source ?? 'Listing'} ↗</a></span>)}</span>
       <button className="lc-link" onClick={() => toggleHide(c.id)}>{isHidden ? 'Unhide' : 'Hide'}</button>
     </div>
   </article>
@@ -370,7 +374,7 @@ function PlusMinus({ c }: { c: Card }) {
 
 function Photos({ c }: { c: Card }) {
   const p = c.photo!
-  const href = p.creditUrl ?? c.url
+  const href = safeUrl(p.creditUrl ?? c.url)
   const credit = p.credit ?? c.source ?? 'the publisher'
   return <div className="lc-photos">
     <span className="lc-small" title="Photos can show a problem; they can't rule one out.">{p.findings ? `${p.findings} ${p.findings === 1 ? 'defect' : 'defects'} in photos` : 'No defects seen in photos'}{p.findings && p.allLow ? <> <WarnMark /></> : null}</span>

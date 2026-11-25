@@ -4,7 +4,9 @@ import re
 from datetime import date, datetime
 from html.parser import HTMLParser
 from urllib.error import HTTPError
-from urllib.request import Request, urlopen
+from urllib.request import Request
+
+from ..netguard import urlopen_public as urlopen   # https, public hosts, redirects re-checked
 
 CITIES = {
     "philadelphia": ("Philadelphia", "PA", "America/New_York"),

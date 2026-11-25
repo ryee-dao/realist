@@ -207,7 +207,7 @@ export default function ComparePage({ city, theme }: { city: City; theme: Theme 
       </section>
 
       <p className="footnote">
-        Police reports from the <a href={city.crimeLink} target="_blank" rel="noreferrer">{city.crimeSource}</a>, last 12 months. Violent: homicide, rape, robbery, aggravated assault. Property: burglary, theft, vehicle theft, arson.<br />
+        Police reports from the <a href={city.crimeLink} target="_blank" rel="noopener noreferrer">{city.crimeSource}</a>, last 12 months. Violent: homicide, rape, robbery, aggravated assault. Property: burglary, theft, vehicle theft, arson.<br />
         Rates are per resident, so busy places with few residents read high. Where few people live, rates are pulled toward the city rate. A change shows only when it is unlikely to be chance.
       </p>
     </>

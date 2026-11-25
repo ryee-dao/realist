@@ -6,6 +6,7 @@ import { Ramp, Tier, tierStyle } from '../lib/grades'
 import { pct, usd, usdCompact } from '../lib/format'
 import { rentLines, rentValue, yieldRange } from '../lib/rent'
 import { Breakdown, Card, CropImage, LOW_MSG, Mark, Point, money, monthYear, Pair, shortDate, WarnMark } from './listingParts'
+import { safeUrl } from '../lib/safeUrl'
 
 /** <city>/listing-detail/<name>.json, written by engine/listing_cards.py and loaded on first open. */
 export interface Detail {
@@ -91,12 +92,12 @@ export default function ListingPanel({ c, city, area, areas, tier, ramp, cityGro
       </div>
 
       <footer className="lp-foot">
-        <a className="lp-go" href={c.url} target="_blank" rel="noopener noreferrer">View on {publisher} ↗</a>
+        <a className="lp-go" href={safeUrl(c.url)} target="_blank" rel="noopener noreferrer">View on {publisher} ↗</a>
         <button className="lc-link" onClick={onHide}>{hidden ? 'Unhide' : 'Hide'}</button>
       </footer>
     </aside>
     {zoom != null && crops[zoom] && <Lightbox crops={crops} at={zoom} go={setZoom} credit={detail?.photo?.credit ?? publisher}
-      href={detail?.photo?.creditUrl ?? c.url} />}
+      href={safeUrl(detail?.photo?.creditUrl ?? c.url)} />}
   </div>
 }
 
@@ -121,7 +122,7 @@ function Overview({ c, detail, daysSince, publisher }: { c: Card; detail: Detail
     {detail?.quotes?.length ? <Section title="From the description">
       <div className="lc-tags">{detail.quotes.map((q) => <span key={q.signal} className="chip">{q.label}</span>)}</div>
       <p className="lp-quotes">{detail.quotes.map((q) => `“${q.quote}”`).join(' · ')}</p>
-      <a className="lc-small" href={c.url} target="_blank" rel="noopener noreferrer">Full description on {publisher} ↗</a>
+      <a className="lc-small" href={safeUrl(c.url)} target="_blank" rel="noopener noreferrer">Full description on {publisher} ↗</a>
     </Section> : null}
     <p className="muted lc-small">
       {c.date ? `Listed ${shortDate(c.date)}` : 'List date not given'}
@@ -157,7 +158,7 @@ function Photos({ c, detail, photoCity, crops, open, publisher }: { c: Card; det
       {p.labelled.length > 0 && <p className="lc-small">Virtually staged (labelled: “{p.labelled[0]}”)</p>}
       {!p.labelled.length && p.possiblyEdited && <p className="lc-small muted">Possibly edited (low-confidence impression)</p>}
     </Section>}
-    {crops.length > 0 && <p className="muted lc-small">Crops of {credit} photos (tap to enlarge) · <a href={p.creditUrl ?? c.url} target="_blank" rel="noopener noreferrer">all photos on {credit} ↗</a></p>}
+    {crops.length > 0 && <p className="muted lc-small">Crops of {credit} photos (tap to enlarge) · <a href={safeUrl(p.creditUrl ?? c.url)} target="_blank" rel="noopener noreferrer">all photos on {credit} ↗</a></p>}
   </>
 }
 
@@ -230,7 +231,7 @@ function AreaTab({ c, area, areas, city, tier, ramp, cityGrowth }: { c: Card; ar
   </>
 }
 
-function Lightbox({ crops, at, go, credit, href }: { crops: Crop[]; at: number; go: (i: number | null) => void; credit: string; href: string }) {
+function Lightbox({ crops, at, go, credit, href }: { crops: Crop[]; at: number; go: (i: number | null) => void; credit: string; href: string | undefined }) {
   const cur = crops[at]
   const n = crops.length
   const touch = useRef<number | null>(null)

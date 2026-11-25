@@ -39,3 +39,11 @@
   .main .ticker b em { display: block; margin: 1px 0 0; font-size: 11px; }
   .main .ticker .spark { display: none; }
 }
+
+/* tablets: the three cities stay side by side (stacking them costs a screenful of height) */
+@media (min-width: 601px) and (max-width: 900px) {
+  .main .ticker { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .main .ticker a { border-top: 0; border-left: 1px solid var(--line); padding: 9px 12px; }
+  .main .ticker a:first-child { border-left: 0; }
+}
+@media (max-width: 360px) { .main .ticker small { letter-spacing: 0; } }

@@ -92,8 +92,8 @@ export default function Pipeline({ index, status }: { index: Index; status: Stat
           <header className="card-head"><div><h3>Public records</h3><p>The datasets behind every number</p></div></header>
           <div className="verify">
             {(city ? [city] : index.cities).flatMap((c) => [
-              ...c.sources.map((s) => <a key={c.id + s.url} href={s.url} target="_blank" rel="noreferrer"><b>{city ? s.name : `${c.name} · ${s.name}`}</b><span>{s.publisher}</span></a>),
-              <a key={c.id + 'crime'} href={c.crimeLink} target="_blank" rel="noreferrer"><b>{city ? 'Reported crime incidents' : `${c.name} · reported crime incidents`}</b><span>{c.crimeSource}</span></a>,
+              ...c.sources.map((s) => <a key={c.id + s.url} href={s.url} target="_blank" rel="noopener noreferrer"><b>{city ? s.name : `${c.name} · ${s.name}`}</b><span>{s.publisher}</span></a>),
+              <a key={c.id + 'crime'} href={c.crimeLink} target="_blank" rel="noopener noreferrer"><b>{city ? 'Reported crime incidents' : `${c.name} · reported crime incidents`}</b><span>{c.crimeSource}</span></a>,
             ])}
           </div>
           <p className="footnote pipe-range">{city

@@ -4,16 +4,58 @@ The engine trades speed for consistency. Every request is spaced out per host,
 transient failures are retried with exponential backoff, and a response only
 counts once it parses as JSON.
 """
-import gzip
 import json
 import os
 import random
+import re
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import zlib
 
 RETRY_STATUS = {408, 425, 429, 500, 502, 503, 504}
+MAX_BODY = 2 << 30          # 2 GiB, compressed or not: far above any real response, a stop for a runaway one
+
+
+def sql_text(value):
+    """A value as a quoted SQL/SoQL string literal (single quotes doubled). Values in our queries come from the
+    sources' own earlier responses (cursors, ids, dates); they are quoted or checked, never pasted in raw."""
+    return "'" + str(value).replace("'", "''") + "'"
+
+
+def sql_int(value):
+    """An integer for a query (a paging cursor from the previous page); anything else raises FetchError."""
+    if isinstance(value, bool):
+        raise FetchError(f"expected an integer cursor, got {value!r}")
+    try:
+        number = int(value)
+    except (TypeError, ValueError) as exc:
+        raise FetchError(f"expected an integer cursor, got {str(value)[:40]!r}") from exc
+    if isinstance(value, float) and value != number:
+        raise FetchError(f"expected an integer cursor, got {value!r}")
+    return number
+
+
+def sql_date(value):
+    """An ISO date or timestamp prefix (YYYY-MM-DD[THH:MM:SS]) for a query; anything else raises FetchError."""
+    text = str(value)
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?)?", text):
+        raise FetchError(f"expected a date, got {text[:40]!r}")
+    return text
+
+
+def _read_capped(resp, gzipped, limit=MAX_BODY):
+    body = resp.read(limit + 1)
+    if len(body) > limit:
+        raise FetchError("response exceeds the size limit")
+    if gzipped:
+        inflate = zlib.decompressobj(16 + zlib.MAX_WBITS)
+        out = inflate.decompress(body, limit + 1)
+        if len(out) > limit or inflate.unconsumed_tail:
+            raise FetchError("decompressed response exceeds the size limit")
+        body = out + inflate.flush()
+    return body
 
 
 class FetchError(RuntimeError):
@@ -62,9 +104,7 @@ class Client:
                     if parse is None:
                         self._last[host] = time.monotonic()
                         return {k.lower(): v for k, v in resp.headers.items()}
-                    body = resp.read()
-                    if resp.headers.get("Content-Encoding") == "gzip":
-                        body = gzip.decompress(body)
+                    body = _read_capped(resp, resp.headers.get("Content-Encoding") == "gzip")
                 self._last[host] = time.monotonic()
                 self.stats["bytes"] += len(body)
                 return parse(body)

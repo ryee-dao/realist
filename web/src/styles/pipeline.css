@@ -111,7 +111,7 @@
 .reasons span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .reasons b { font: 600 12.5px var(--mono); text-align: right; }
 .reasons em { font: 500 11.5px var(--mono); font-style: normal; color: var(--muted); text-align: right; }
-.gate-list { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 0 28px; }
+.gate-list { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(min(300px, 100%), 1fr)); gap: 0 28px; }
 .gate-list li { display: grid; grid-template-columns: 30px minmax(0, 1fr); gap: 2px 10px; align-items: start; padding: 7px 0; border-bottom: 1px solid var(--line); font-size: 13px; }
 .gate-list .chip { justify-content: center; grid-row: span 2; }
 .gate-list .muted { grid-column: 2; font-size: 12px; }

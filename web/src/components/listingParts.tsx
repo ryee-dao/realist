@@ -2,6 +2,8 @@
 import { CSSProperties, useState } from 'react'
 import { City } from '../lib/data'
 import { usdCompact } from '../lib/format'
+import { dataPath } from '../lib/safeUrl'
+import { placeTip } from './bits'
 
 // ---- engine/listing_cards.py output ----
 export type Item = { text: string; kind: 'model' | 'area' | 'sold' | 'description' | 'photo'; why?: string }
@@ -45,7 +47,7 @@ export const LOW_MSG = 'Low confidence — may be wrong'
 
 /** The yellow "!" warning marker (same look and hover/tap behaviour as the few-sales marker on the Market page). */
 export function WarnMark({ tip = LOW_MSG }: { tip?: string }) {
-  return <button type="button" className="few-mark" aria-label={tip} data-tip={tip}>!</button>
+  return <button type="button" className="few-mark" aria-label={tip} data-tip={tip} onFocus={placeTip} onPointerEnter={placeTip} onPointerDown={placeTip}>!</button>
 }
 
 /** A defect crop with an arrow pointing at the model's box (decorative) and, when given, a short caption chip.
@@ -70,7 +72,7 @@ export function CropImage({ src, alt, mark, point, low, caption, cover, marks = 
     m = x1 >= x0 && y1 >= y0 && x0 < 1 && y0 < 1 && x1 > 0 && y1 > 0 ? { x: x0, y: y0, w: x1 - x0, h: y1 - y0 } : null
   }
   return <span className={`lc-cropbox${cover ? ' cover' : ''}`}>
-    <img src={`data/${src}`} alt={alt} loading="lazy" style={style}
+    <img src={dataPath(src)} alt={alt} loading="lazy" decoding="async" style={style}
       onLoad={(e) => { const i = e.currentTarget; setRatio(i.naturalWidth / Math.max(1, i.naturalHeight)); onSize?.(i.naturalWidth) }} />
     {marks && m && (!cover || ratio) && (() => {
       // An arrow, not an outline: crops are small, and an outline often swallows most of the picture. The tip sits

@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { startTransition, useEffect, useLayoutEffect, useRef, useState } from 'react'
 
 /** Width of an element, tracked as it resizes. */
 export function useWidth<T extends HTMLElement>(): [React.RefObject<T>, number] {
@@ -27,7 +27,8 @@ function parse(): Route {
 export function useRoute(): Route {
   const [route, setRoute] = useState(parse)
   useEffect(() => {
-    const on = () => { setRoute(parse()); window.scrollTo(0, 0) }
+    // a transition: while the next page's code loads, the current page stays on screen instead of a placeholder
+    const on = () => { startTransition(() => setRoute(parse())); window.scrollTo(0, 0) }
     window.addEventListener('hashchange', on)
     return () => window.removeEventListener('hashchange', on)
   }, [])
