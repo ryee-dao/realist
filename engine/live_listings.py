@@ -272,6 +272,14 @@ def home_key(address, zip_code=None):
     return " ".join([number] + street) + (f" #{unit}" if unit else "") + (f" {zip_code}" if zip_code else "")
 
 
+def same_price(a, b):
+    return type(a) in (int, float) and type(b) in (int, float) and abs(a - b) <= 0.005 * max(a, b)
+
+
+def base_key(key):
+    return str(key).split(" ~")[0]
+
+
 def merge_home(key, entries):
     entries.sort(key=lambda e: e["asOf"], reverse=True)  # the most recent read first
     latest = entries[0]
@@ -318,11 +326,21 @@ def merge_city(root, city, now, inactive=()):
             entry = {"provider": provider, "asOf": snapshot["asOf"],
                      **{k: row[k] for k in ENTRY_FIELDS if row.get(k) not in (None, "", [])}}
             key = home_key(row.get("address"), row.get("zip")) or row["url"]
-            # Two URLs from one publisher are two homes (for example units listed without a unit number).
-            slot, n = key, 1
-            while any(e["provider"] == provider for e in homes.get(slot, [])):
+            # Two URLs from one publisher at one address are two homes only when their prices differ (units listed
+            # without a unit number). At the same price it is one home under two links (a publisher's search and
+            # property pages can link it differently), and the entry with the larger gallery is kept.
+            slot, n, twin = key, 1, None
+            while True:
+                mine = [e for e in homes.get(slot, []) if e["provider"] == provider]
+                twin = next((e for e in mine if same_price(e.get("price"), entry.get("price"))), None)
+                if twin is not None or not mine:
+                    break
                 n += 1
                 slot = f"{key} ~{n}"
+            if twin is not None:
+                if len(entry.get("photos") or []) > len(twin.get("photos") or []):
+                    homes[slot][homes[slot].index(twin)] = entry
+                continue
             homes.setdefault(slot, []).append(entry)
             publishers[provider]["rows"] += 1
     fresh = [merge_home(key, entries) for key, entries in homes.items()]
@@ -362,14 +380,31 @@ def carry_forward(fresh, previous, off, earliest):
         row["lastSeen"] = max(seen + [(old or {}).get("lastSeen") or ""])
         out.append(row)
     keys = {r["key"] for r in out}
+    by_base = {}
+    for r in out:
+        by_base.setdefault(base_key(r["key"]), []).append(r)
     for old in previous:
         if (not isinstance(old, dict) or id(old) in used or old.get("key") in keys or not old.get("url")
                 or (old.get("date") or "") < earliest or _urls(old) & set(off)):
+            continue
+        # an earlier row for an address already kept at the same price is that home under another link: fold it in
+        twin = next((r for r in by_base.get(base_key(old["key"]), []) if same_price(r.get("price"), old.get("price"))), None)
+        if twin is not None:
+            twin["date"] = min(twin["date"], old.get("date") or twin["date"])
+            twin["firstSeen"] = min([x for x in (twin.get("firstSeen"), old.get("firstSeen")) if x], default=None)
+            if len(old.get("photos") or []) > len(twin.get("photos") or []):
+                twin["photos"] = old["photos"]
+            if len(old.get("description") or "") > len(twin.get("description") or ""):
+                twin["description"] = old["description"]
+            have = _urls(twin)
+            twin["sources"] = twin.get("sources", []) + [e for e in old.get("sources") or []
+                                                         if isinstance(e, dict) and e.get("url") not in have]
             continue
         seen = [e.get("asOf") for e in old.get("sources") or [] if isinstance(e, dict) and e.get("asOf")]
         old.setdefault("firstSeen", min(seen) if seen else None)
         old.setdefault("lastSeen", max(seen) if seen else None)
         out.append(old)
+        by_base.setdefault(base_key(old["key"]), []).append(old)
     return out
 
 

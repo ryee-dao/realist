@@ -304,7 +304,8 @@ class MergeTests(unittest.TestCase):
                 home("https://at/1", "2026-11-21", 299000, "220 S Green Street #4S, Chicago, IL 60607", photos=["a1", "a2"],
                      description="A penthouse.", beds=4),
                 home("https://at/2", "2026-11-22", address="5 Elm St, Chicago, IL 60614"),
-                home("https://at/3", "2026-11-22", address="5 Elm St, Chicago, IL 60614")])  # same publisher, another unit
+                home("https://at/3", "2026-11-22", 412000, address="5 Elm St, Chicago, IL 60614"),   # another unit: its own price
+                home("https://at/2b", "2026-11-22", address="5 Elm St, Chicago, IL 60614")])  # at/2 again under another link
             snapshot("weichert", self.now - timedelta(days=8), [home("https://w/1", "2026-11-23", address="1 Oak St, Chicago, IL 60601")])
             merged = feed.merge_city(root, "chicago", self.now)
         self.assertEqual(set(merged["publishers"]), {"movoto", "atproperties"})  # Weichert's snapshot is too old

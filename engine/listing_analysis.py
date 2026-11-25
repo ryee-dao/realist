@@ -1969,6 +1969,32 @@ def _version(name):
     return int(m.group(1)) if m else 1
 
 
+def address_key(row):
+    """live_listings.home_key for a listing row or a stored record: the same home whichever publisher's link it has."""
+    from .live_listings import home_key
+    return home_key(row.get("address"), row.get("zip"))   # never row["key"]: on a stored record that is the gallery hash
+
+
+def stored_record(cache, home, by_key=None):
+    """The stored photo tags for a home: under its link, any of its publishers' links, or (``by_key``, records by
+    address_key) the same street address. Publishers differ between environments (one refuses GitHub's runners), so
+    a home tagged from one publisher's link is often known elsewhere only by another's."""
+    for u in [home.get("url"), *(home.get("urls") or [])]:
+        if u in cache:
+            return cache[u]
+    return (by_key or {}).get(address_key(home))
+
+
+def records_by_key(cache):
+    """Stored records by address_key, the newest analysis winning."""
+    out = {}
+    for record in sorted(cache.values(), key=lambda r: r.get("analysedAt") or ""):
+        key = address_key(record)
+        if key:
+            out[key] = record
+    return out
+
+
 def record_valid(record, subject):
     """True when a stored entry still describes this gallery and description, under the prompt version it was made with."""
     if not record:
@@ -2538,7 +2564,7 @@ def analyse_city(root, city, *, backend=None, model=DEFAULT_MODEL, limit=20, max
             cropper = load_cropper()
             if cropper is None and not dry_run:
                 log(f"{city}: neither Pillow nor ImageMagick is available; photo tags are kept, defect crops skipped")
-        queue = []
+        queue, by_key = [], records_by_key(cache)
         for home in homes if report["stopped"] is None else []:
             subject = photo_subject(home)
             if len(subject["photos"]) < MIN_PHOTOS:
@@ -2548,7 +2574,7 @@ def analyse_city(root, city, *, backend=None, model=DEFAULT_MODEL, limit=20, max
                 continue
             chosen = assign_backend(home["url"], codex_share if (codex is not None or dry_run) else 0)
             model_for = backend_model(backends[chosen]) if backends.get(chosen) else model
-            old = cache.get(home["url"])
+            old = stored_record(cache, home, by_key)
             current = record_valid(old, subject) and old.get("model", model) in (model, model_for)
             if not requested and current and _version(old.get("promptVersion")) >= _version(RETAG_BELOW):
                 continue  # already tagged (v4+ has room ids; v5 only adds the optional item); --url re-tags on request
@@ -2680,25 +2706,27 @@ def analyse_city(root, city, *, backend=None, model=DEFAULT_MODEL, limit=20, max
         history_path = cache_dir / "tag-history" / f"{city}.jsonl" if history else None
         changed = apply_retention(cache, now.date(), crop_store, site_crops, history_path)
 
-    listings, listed = [], set()
+    listings, listed, by_key = [], set(), records_by_key(cache)
     for home in homes:
         item = {"url": home["url"], "urls": home.get("urls") or [home["url"]], "address": home.get("address"),
                 "date": home.get("date"), "price": home.get("price"), "source": home.get("source"),
                 "photoCount": len(home.get("photos") or []), "hasDescription": bool(text_of(home)),
                 "inSnapshot": True, "signals": text_signals(text_of(home)),
                 "description": desc.get(home["url"], {"words": 0}), "compare": areas.compare(home, city)}
-        record = cache.get(home["url"])
+        record = stored_record(cache, home, by_key)
         subject = photo_subject(home)
-        # A home known here only from the listing seed (facts, no gallery) keeps the tags made where its gallery was
-        # read; once this environment reads the gallery itself the usual check applies, and a changed one is re-tagged.
-        if record_valid(record, subject) or (record and not subject["photos"]):
+        # Stored tags are shown even when they were made from another reading of the home (another publisher's
+        # gallery, or a home known here only from the listing seed); the tagging queue above re-tags a home whose
+        # gallery here differs, and that replaces them.
+        if record:
             item["photo"] = _compact_photo(record, city, site_crops, home_facts(home, city),
                                            len(subject["photos"]) or record.get("galleryCount") or 0, text_of(home))
         listed.update(item["urls"])
+        listed.add(address_key(home) or home["url"])
         listings.append(item)
     for url, record in cache.items():
         # past the 7-day snapshot but inside the 30-day retention window: kept from the analysis store
-        if url not in listed and not dry_run:
+        if url not in listed and address_key(record) not in listed and not dry_run:
             row = {k_: record.get(k_) for k_ in ("url", "address", "date", "price", "source")}
             listings.append({**row, "urls": [url], "photoCount": None, "hasDescription": None, "inSnapshot": False,
                              "signals": record.get("signals") or {}, "description": {},
