@@ -1982,16 +1982,25 @@ def stored_record(cache, home, by_key=None):
     for u in [home.get("url"), *(home.get("urls") or [])]:
         if u in cache:
             return cache[u]
-    return (by_key or {}).get(address_key(home))
+    by_key = by_key or {}
+    return by_key.get(address_key(home)) or by_key.get(core_key(home))
+
+
+def core_key(row):
+    """Street address without its suffix, plus the asking price: publishers disagree on "St" / "Ave" for one home
+    (live_listings.street_core); the price keeps two streets that share a name stem apart."""
+    from .live_listings import street_core
+    core, price = street_core(row.get("address"), row.get("zip")), row.get("price")
+    return ("core", core, round(price, -3)) if core and type(price) in (int, float) and price > 0 else None
 
 
 def records_by_key(cache):
-    """Stored records by address_key, the newest analysis winning."""
+    """Stored records by address_key and by core_key, the newest analysis winning."""
     out = {}
     for record in sorted(cache.values(), key=lambda r: r.get("analysedAt") or ""):
-        key = address_key(record)
-        if key:
-            out[key] = record
+        for key in (address_key(record), core_key(record)):
+            if key:
+                out[key] = record
     return out
 
 
@@ -2722,11 +2731,11 @@ def analyse_city(root, city, *, backend=None, model=DEFAULT_MODEL, limit=20, max
             item["photo"] = _compact_photo(record, city, site_crops, home_facts(home, city),
                                            len(subject["photos"]) or record.get("galleryCount") or 0, text_of(home))
         listed.update(item["urls"])
-        listed.add(address_key(home) or home["url"])
+        listed.update(k_ for k_ in (address_key(home) or home["url"], core_key(home)) if k_)
         listings.append(item)
     for url, record in cache.items():
         # past the 7-day snapshot but inside the 30-day retention window: kept from the analysis store
-        if url not in listed and address_key(record) not in listed and not dry_run:
+        if url not in listed and address_key(record) not in listed and core_key(record) not in listed and not dry_run:
             row = {k_: record.get(k_) for k_ in ("url", "address", "date", "price", "source")}
             listings.append({**row, "urls": [url], "photoCount": None, "hasDescription": None, "inSnapshot": False,
                              "signals": record.get("signals") or {}, "description": {},
