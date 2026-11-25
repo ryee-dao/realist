@@ -187,4 +187,4 @@ Version 1 was a Flask, Postgres, Celery and Redis application that scraped listi
 
 Figures are for research. They are not appraisals or financial advice. Public records lag the market by several weeks, and a median describes the homes that happened to sell in a period.
 
-The data belongs to its publishers.
+Copyright 2026 Ryan Dao. The code is under the [PolyForm Noncommercial License 1.0.0](https://polyformproject.org/licenses/noncommercial/1.0.0) (see `LICENSE`): you may read, run and adapt it for noncommercial purposes. Commercial use needs written permission: ryan@ryandao.dev. The data belongs to its publishers.
