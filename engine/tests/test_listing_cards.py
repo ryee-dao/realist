@@ -137,7 +137,8 @@ class BuildTests(unittest.TestCase):
              "description": {"unusual": True},
              "photo": {"findingCount": 3, "credit": "Movoto", "creditUrl": "https://x/2",
                        "findings": [{"type": "water_stain_ceiling", "room": "bedroom", "rooms": 2, "evidence": "stain",
-                                     "crops": ["analysis/crops/philadelphia/a.jpg", "analysis/crops/philadelphia/b.jpg"]},
+                                     "crops": ["analysis/crops/philadelphia/a.jpg", "analysis/crops/philadelphia/b.jpg"],
+                                     "points": [{"x": 0.3, "y": 0.6}, None]},
                                     {"type": "peeling_paint", "room": "kitchen", "rooms": 1, "evidence": "paint", "crops": []}],
                        "coverage": {"rating": "partial", "missing": ["basement"]}, "editing": {}}},
             {"url": "https://x/old", "urls": ["https://x/old"], "inSnapshot": False, "address": "1 Old St, Philadelphia, PA 19125",
@@ -178,7 +179,9 @@ class BuildTests(unittest.TestCase):
         self.assertNotIn("estimate", condo)                # the area's sales are single family; a condo gets no median
         odd = by["https://x/4"]                            # 200 sq ft for $900k: the floor area is not believable
         self.assertNotIn("vsPpsfPct", odd["sold"])
-        self.assertEqual(odd["estimate"]["kind"], "median")    # the median does not use the floor area
+        # the median does not use the floor area, but $900k is over twice it: no number is shown (ATYPICAL_RATIO)
+        self.assertNotIn("estimate", odd)
+        self.assertEqual(odd["noEstimate"], "Floor area on the listing looks wrong")
 
     def test_cards_without_an_estimate_say_why(self):
         _, by = self.cards()
@@ -206,6 +209,7 @@ class BuildTests(unittest.TestCase):
         self.assertEqual(c["signals"], ["as_is", "renovated"])
         self.assertEqual(c["photo"]["findings"], 3)
         self.assertEqual([x["src"] for x in c["photo"]["crops"]], ["analysis/crops/philadelphia/a.jpg", "analysis/crops/philadelphia/b.jpg"])
+        self.assertEqual([x["point"] for x in c["photo"]["crops"]], [{"x": 0.3, "y": 0.6}, None])   # parallel to src
         fish = by["https://x/1"]
         self.assertIn("Fewer incidents than the city figure", [i["text"] for i in fish["plus"]])
         words = json.dumps([by[u]["plus"] + by[u]["minus"] for u in by]).lower()
@@ -260,6 +264,8 @@ class BuildTests(unittest.TestCase):
         self.assertEqual([c["address"] for c in d1["comps"]], ["102 Main St"])      # its own address is not a comparison
         d2 = json.loads((folder / f"{by['https://x/2']['detail']}.json").read_text())
         self.assertEqual(d2["photo"]["findings"][0]["crops"], ["analysis/crops/philadelphia/a.jpg", "analysis/crops/philadelphia/b.jpg"])
+        self.assertEqual(d2["photo"]["findings"][0]["points"], [{"x": 0.3, "y": 0.6}, None])
+        self.assertEqual(d2["photo"]["findings"][1]["points"], [])                    # no crops, no points
         self.assertEqual(d2["photo"]["missing"], ["basement"])
         self.assertIn({"signal": "as_is", "label": "Sold as-is", "quote": "AS-IS"}, d2["quotes"])
         self.assertEqual(d2["comps"][0]["address"], "9 Far Rd")                       # no pin: the area's latest sales
@@ -288,6 +294,160 @@ class BuildTests(unittest.TestCase):
         self.assertEqual(json.loads(Path(self.root, "philadelphia/listing-cards.json").read_text())["summary"], doc["summary"])
         self.assertIsNone(lc.publish(self.root, "nyc", now=NOW, log=lambda *_: None))
         lc.refresh(self.root, ["nyc"], store_dir=None, log=lambda *_: None)   # never raises
+
+
+def opa_row(p, loc, unit=None, zip_code="19134", cat="SINGLE FAMILY", bdesc="ROW PORCH FRONT", **f):
+    """One opa_properties_public row as PHL_BY_LOCATION_SQL selects it."""
+    return {"p": p, "loc": loc, "unit": unit, "zip": zip_code, "cat": cat, "bdesc": bdesc, "bdesc_old": "ROW 2 STY MASONRY",
+            "ic": "4", "ec": "4", "baths": 1, "beds": 3, "stories": 2, "sqft": 1100, "lot": 900, "garage": 0, "air": "N",
+            "bsmt": "D", "grade": "C", "vw": "I", "fp": 0, "yb": 1925, "mv": 150000, **f}
+
+
+class FakeCarto:
+    """Answers PHL_BY_LOCATION_SQL from {location: [rows]}; records every query. `fail` raises like an unreachable API."""
+
+    def __init__(self, parcels=None, fail=False):
+        self.parcels, self.fail, self.queries = parcels or {}, fail, []
+
+    def get_json(self, url, params, headers=None):
+        from engine.http import FetchError
+        self.queries.append(params["q"])
+        if self.fail:
+            raise FetchError("phl.carto.com failed after 2 attempts: URLError")
+        import re
+        inside = re.search(r"location in \((.*)\)$", params["q"]).group(1)
+        return {"rows": [r for loc in re.findall(r"'([^']*)'", inside) for r in self.parcels.get(loc, [])]}
+
+
+class RootedStore(FakeStore):
+    def __init__(self, root, lookup=None, rows=None):
+        super().__init__(lookup or {}, rows or [])
+        self.root = str(root)
+
+
+class AddressLookupTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.store = RootedStore(self.tmp.name)
+        self.today = "2026-11-24"
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def records(self, client, addresses, today=None, log=None):
+        return lc.AddressRecords(self.store, "philadelphia", client, today or self.today,
+                                 log or (lambda *_: None)).prepare(addresses)
+
+    def test_locations_are_built_strictly_and_hostile_text_is_never_sent(self):
+        from engine.characteristics import phl_location, phl_records_by_location
+        key = lambda a: lc.normalize_address(a, "philadelphia")
+        self.assertEqual(phl_location(key("946 N 2nd St #3 Philadelphia, PA 19123")), "946 N 2ND ST")
+        self.assertEqual(phl_location(key("1214 South 21st Street, Philadelphia, PA 19146")), "1214 S 21ST ST")
+        self.assertEqual(phl_location(key("40 W 11th St")), "40 W 11TH ST")
+        self.assertEqual(phl_location(key("5 E 103rd St")), "5 E 103RD ST")
+        for hostile in ["1 Main St'); DROP TABLE opa_properties_public;-- , Philadelphia, PA 19125",
+                        "7 '||pg_sleep(9)||' St", "12 O'Neil St", "3 Elm St\u0000 or 1=1", "9 Ash St; select owner_1"]:
+            self.assertIsNone(phl_location(key(hostile)), hostile)
+        client = FakeCarto()
+        with self.assertRaises(ValueError):
+            phl_records_by_location(client, ["1 MAIN ST') OR ('1'='1"])
+        self.assertEqual(client.queries, [])
+        recs = self.records(client, ["1 Main St'); DROP TABLE opa_properties_public;--", "100 Main Street, Philadelphia, PA 19125"])
+        self.assertEqual(len(client.queries), 1)
+        q = client.queries[0]
+        self.assertIn("location in ('100 MAIN ST')", q)
+        self.assertNotIn("DROP", q)
+        for banned in ("owner", "mailing"):
+            self.assertNotIn(banned, q.lower())
+        self.assertIn("category_code_description in ('SINGLE FAMILY', 'MULTI FAMILY')", q)
+        self.assertEqual(recs.match("1 Main St'); DROP TABLE opa_properties_public;--"), (None, None))
+
+    def test_addresses_are_batched_into_few_queries(self):
+        client = FakeCarto({"5 OAK ST": [opa_row("P5", "5 OAK ST")]})
+        addresses = [f"{n} Oak Street, Philadelphia, PA 19134" for n in range(1, 251)] + ["5 Oak St, Philadelphia, PA 19134"]
+        recs = self.records(client, addresses)
+        self.assertEqual(len(client.queries), 3)                     # 250 distinct addresses, 100 per query
+        sale, record = recs.match("5 Oak St, Philadelphia, PA 19134")
+        self.assertIsNone(sale)
+        self.assertEqual((record["sqft"], record["form"], record["type"]), ("1100", "Row", "Single family"))
+
+    def test_ambiguous_addresses_and_condos_do_not_match(self):
+        client = FakeCarto({
+            "7 ELM ST": [opa_row("A1", "7 ELM ST", zip_code="19125"), opa_row("A2", "7 ELM ST", zip_code="19134")],
+            "9 ASH ST": [opa_row("C1", "9 ASH ST", unit="2", bdesc="RES CONDO 3 STY MASON"),
+                         opa_row("C2", "9 ASH ST", unit="3", bdesc="RES CONDO 3 STY MASON")],
+            "11 FIR ST": [opa_row("F1", "11 FIR ST", unit="1"), opa_row("F2", "11 FIR ST", unit="2")],
+        })
+        recs = self.records(client, ["7 Elm St", "9 Ash St #2", "11 Fir St"])
+        self.assertEqual(recs.match("7 Elm St"), (None, None))                         # two parcels, no ZIP to choose
+        self.assertEqual(recs.match("7 Elm St, Philadelphia, PA 19134")[1]["type"], "Single family")   # the ZIP decides
+        self.assertEqual(recs.match("9 Ash St #2"), (None, None))                      # a condo: the model has none
+        self.assertEqual(recs.match("11 Fir St"), (None, None))                        # units only: which one?
+        self.assertIsNotNone(recs.match("11 Fir St #2")[1])
+
+    def test_answers_are_cached_including_no_parcel_and_refreshed_after_30_days(self):
+        client = FakeCarto({"5 OAK ST": [opa_row("P5", "5 OAK ST")]})
+        self.records(client, ["5 Oak St", "77 Nowhere Ave"])
+        self.assertEqual(len(client.queries), 1)
+        cached = json.loads(Path(self.tmp.name, "_lookups", "philadelphia_address_records.json").read_text())["addresses"]
+        self.assertEqual(cached["77 NOWHERE AVE"], {"fetched": self.today, "parcels": []})
+        again = FakeCarto(fail=True)                     # a second run asks nothing it already knows
+        recs = self.records(again, ["5 Oak St", "77 Nowhere Ave"], log=self.fail)
+        self.assertEqual(again.queries, [])
+        self.assertIsNotNone(recs.match("5 Oak St")[1])
+        later = FakeCarto({})
+        self.records(later, ["5 Oak St", "77 Nowhere Ave"], today="2026-12-25")
+        self.assertEqual(len(later.queries), 1)
+        self.assertIn("'5 OAK ST'", later.queries[0])
+
+    def test_record_only_features_match_the_sale_path(self):
+        from engine.characteristics import CITIES
+        cfg = CITIES["philadelphia"]
+        rec = lc.AddressRecords(self.store, "philadelphia", FakeCarto({"5 OAK ST": [opa_row("P5", "5 OAK ST")]}),
+                                self.today, lambda *_: None).prepare(["5 Oak St"]).match("5 Oak St")[1]
+        sale = {"type": "Single family", "sqft": "1100", "year_built": "1925", "beds": "3", "date": "2020-01-01"}
+        self.assertEqual(lc.model_features(cfg, None, rec, self.today), lc.model_features(cfg, sale, rec, self.today))
+        self.assertEqual(lc.model_features(cfg, None, rec, self.today)["Age at sale"], "100-124 yrs")    # today's age
+        self.assertIsNone(lc.model_features(cfg, None, {k: v for k, v in rec.items() if k != "type"}, self.today))
+
+
+class AddressBuildTests(unittest.TestCase):
+    """The card build with the lookup: 5 Oak St (Kensington) has not sold within the stored sales."""
+    setUp, tearDown = BuildTests.setUp, BuildTests.tearDown
+
+    def build_with(self, client, logs=None):
+        write(self.root, "philadelphia/model-predictor.json", dict(PREDICTOR, areas={"Fishtown|": 0.3, "Kensington|": -0.4}))
+        store = RootedStore(Path(self.root, "store"), {"P1": {"sqft": "1500"}},
+                            [{"id": "s1", "date": "2025-06-01", "price": "120000", "type": "Single family",
+                              "address": "100 Main St", "zip": "19125", "sqft": "1500", "year_built": "", "beds": "3",
+                              "parcel": "P1"}])
+        doc = lc.build(self.root, "philadelphia", store, NOW, client=client, log=(logs.append if logs is not None else print))
+        return doc, {c["url"]: c for c in doc["cards"]}
+
+    def test_a_home_with_no_recorded_sale_is_priced_from_its_record(self):
+        client = FakeCarto({"5 OAK ST": [opa_row("P5", "5 OAK ST", bsmt="A")]})
+        doc, by = self.build_with(client)
+        c = by["https://x/2"]
+        self.assertEqual(c["estimate"]["kind"], "model")
+        self.assertIn("Finished basement", [p["label"] for p in c["estimate"]["parts"]])
+        self.assertEqual(c["estimate"]["area"]["name"], "Kensington")
+        self.assertNotIn("lastSale", c)                                  # it has none, and the card does not claim one
+        self.assertEqual(set(c["estimate"]) - {"low", "high", "vsPct"},
+                         set(by["https://x/1"]["estimate"]) - {"low", "high", "vsPct"})   # the shape the site reads
+        self.assertEqual(by["https://x/1"]["lastSale"]["date"], "2025-06-01")            # the sold home is unchanged
+        self.assertEqual(doc["summary"]["estimates"]["model"], 2)
+        q = " ".join(client.queries)
+        self.assertNotIn("100 MAIN ST", q)            # matched to a recorded sale already: not asked
+        self.assertNotIn("7 ELM ST", q)               # a condo listing: the model has no condos, so not asked
+
+    def test_a_network_failure_keeps_todays_cards(self):
+        logs = []
+        doc, by = self.build_with(FakeCarto(fail=True), logs)
+        self.assertEqual(by["https://x/2"]["estimate"]["kind"], "ppsf")
+        self.assertEqual(by["https://x/1"]["estimate"]["kind"], "model")
+        self.assertEqual(len(logs), 1)
+        self.assertIn("not looked up", logs[0])
+        self.assertFalse(Path(self.root, "store", "_lookups", "philadelphia_address_records.json").exists())
 
 
 if __name__ == "__main__":

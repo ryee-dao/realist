@@ -37,7 +37,9 @@ export type CardsDoc = {
 
 /** Where the model's box sits inside a crop, as fractions of the crop (engine crop_mark); null: the box is the crop. */
 export type Mark = { x: number; y: number; w: number; h: number } | null
-export type CropRef = { src: string; label: string; caption?: string; low?: boolean; mark?: Mark }
+/** The exact spot of the damage inside a crop, as fractions of the crop (engine locate pass); null: not pinpointed. */
+export type Point = { x: number; y: number } | null
+export type CropRef = { src: string; label: string; caption?: string; low?: boolean; mark?: Mark; point?: Point }
 
 export const LOW_MSG = 'Low confidence — may be wrong'
 
@@ -46,14 +48,17 @@ export function WarnMark({ tip = LOW_MSG }: { tip?: string }) {
   return <button type="button" className="few-mark" aria-label={tip} data-tip={tip}>!</button>
 }
 
-/** A defect crop with the model's box outlined (decorative) and, when given, a short caption chip.
- *  ``cover``: the image fills a square box (object-fit: cover), so the outline is mapped into what is visible. */
-export function CropImage({ src, alt, mark, low, caption, cover, marks = true, style, onSize }: {
-  src: string; alt: string; mark?: Mark; low?: boolean; caption?: string; cover?: boolean; marks?: boolean
+/** A defect crop with an arrow pointing at the model's box (decorative) and, when given, a short caption chip.
+ *  ``cover``: the image fills a square box (object-fit: cover), so the arrow is mapped into what is visible. */
+export function CropImage({ src, alt, mark, point, low, caption, cover, marks = true, style, onSize }: {
+  src: string; alt: string; mark?: Mark; point?: Point; low?: boolean; caption?: string; cover?: boolean; marks?: boolean
   style?: CSSProperties; onSize?: (naturalWidth: number) => void
 }) {
   const [ratio, setRatio] = useState<number | null>(null)   // natural width / height
-  let m = mark ?? null
+  // The arrow tip: the pinpointed spot when the engine has one; otherwise the middle of the model's box, but only
+  // when that box is small enough to mean something (a box over most of the crop says nothing about where).
+  let m: Mark = point ? { x: point.x, y: point.y, w: 0, h: 0 }
+    : mark && Math.max(mark.w, mark.h) <= 0.5 ? mark : null
   if (m && cover && ratio) {
     // object-fit: cover crops the longer side symmetrically; re-express the mark in the visible square
     const keep = ratio > 1 ? 1 / ratio : ratio
@@ -62,13 +67,23 @@ export function CropImage({ src, alt, mark, low, caption, cover, marks = true, s
     if (ratio > 1) { const a = map(m.x, m.w); m = { ...m, x: a.v, w: a.len } } else { const a = map(m.y, m.h); m = { ...m, y: a.v, h: a.len } }
     const x0 = Math.max(0, m.x), y0 = Math.max(0, m.y)
     const x1 = Math.min(1, m.x + m.w), y1 = Math.min(1, m.y + m.h)
-    m = x1 > x0 && y1 > y0 ? { x: x0, y: y0, w: x1 - x0, h: y1 - y0 } : null
+    m = x1 >= x0 && y1 >= y0 && x0 < 1 && y0 < 1 && x1 > 0 && y1 > 0 ? { x: x0, y: y0, w: x1 - x0, h: y1 - y0 } : null
   }
   return <span className={`lc-cropbox${cover ? ' cover' : ''}`}>
     <img src={`data/${src}`} alt={alt} loading="lazy" style={style}
       onLoad={(e) => { const i = e.currentTarget; setRatio(i.naturalWidth / Math.max(1, i.naturalHeight)); onSize?.(i.naturalWidth) }} />
-    {marks && m && (!cover || ratio) && <span className={`lc-mark${low ? ' low' : ''}`} aria-hidden="true"
-      style={{ left: `${m.x * 100}%`, top: `${m.y * 100}%`, width: `${m.w * 100}%`, height: `${m.h * 100}%` }} />}
+    {marks && m && (!cover || ratio) && (() => {
+      // An arrow, not an outline: crops are small, and an outline often swallows most of the picture. The tip sits
+      // on the middle of the model's box; the tail comes from whichever side of the picture has more room.
+      const cx = m.x + m.w / 2, cy = m.y + m.h / 2
+      const angle = Math.atan2(cy < 0.5 ? 1 : -1, cx < 0.5 ? 1 : -1) * 180 / Math.PI
+      return <span className={`lc-arrow${low ? ' low' : ''}`} aria-hidden="true" style={{ left: `${cx * 100}%`, top: `${cy * 100}%` }}>
+        <svg viewBox="0 0 40 16" style={{ transform: `rotate(${angle}deg)` }}>
+          <path className="halo" d="M3 8H38M3 8l9-6M3 8l9 6" />
+          <path d="M3 8H38M3 8l9-6M3 8l9 6" />
+        </svg>
+      </span>
+    })()}
     {marks && caption && <span className="lc-cap" aria-hidden="true">{caption}</span>}
   </span>
 }

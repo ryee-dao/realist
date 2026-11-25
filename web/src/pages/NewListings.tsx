@@ -376,7 +376,7 @@ function Photos({ c }: { c: Card }) {
     <span className="lc-small" title="Photos can show a problem; they can't rule one out.">{p.findings ? `${p.findings} ${p.findings === 1 ? 'defect' : 'defects'} in photos` : 'No defects seen in photos'}{p.findings && p.allLow ? <> <WarnMark /></> : null}</span>
     {p.crops.length > 0 && <span className="lc-crops">
       {p.crops.slice(0, 5).map((x) => <a key={x.src} href={href} target="_blank" rel="noopener noreferrer" title={`${x.label}${x.low ? ` (${LOW_MSG.toLowerCase()})` : ''}. Crop of a ${credit} photo; opens the listing.`}>
-        <CropImage src={x.src} alt={`${x.label}, detected in a listing photo`} mark={x.mark} low={x.low} cover /></a>)}
+        <CropImage src={x.src} alt={`${x.label}, detected in a listing photo`} mark={x.mark} point={x.point} low={x.low} cover /></a>)}
       {p.crops.length > 5 && <a className="lc-more" href={href} target="_blank" rel="noopener noreferrer" title={`More crops of ${credit} photos; opens the listing.`}>+{p.crops.length - 5}</a>}
     </span>}
   </div>

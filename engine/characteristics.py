@@ -8,21 +8,26 @@ renovated after a 2020 sale shows today's condition against the 2020 price.
 
 Philadelphia: the Office of Property Assessment's `opa_properties_public` table on the city's Carto SQL API. Only
 residential parcels (single and multi family) are read, and only parcels that appear in the stored sales are kept, so
-the lookup stays small. Owner and mailing fields are never requested.
+the lookup stays small. Owner and mailing fields are never requested. The listing cards (engine/listing_cards.py)
+also look up the record of a listed home that has not sold within the stored sales, by its street address
+(phl_records_by_location), so the model can price it from the same fields.
 """
 import datetime as dt
 import math
+import re
 
 from .http import FetchError
-from .schema import MULTI, to_int
+from .schema import CONDO, MULTI, SINGLE, to_int
 
 PHL_API = "https://phl.carto.com/api/v2/sql"
 PHL_PAGE = 20000
-PHL_SQL = """
-select cartodb_id cid, parcel_number p, interior_condition ic, exterior_condition ec, number_of_bathrooms baths,
+PHL_FIELDS = """
+       interior_condition ic, exterior_condition ec, number_of_bathrooms baths,
        number_of_bedrooms beds, number_stories stories, total_livable_area sqft, total_area lot, garage_spaces garage,
        central_air air, basements bsmt, quality_grade grade, view_type vw, fireplaces fp, year_built yb,
        building_code_description_new bdesc, building_code_description bdesc_old, market_value mv
+"""
+PHL_SQL = "select cartodb_id cid, parcel_number p, " + PHL_FIELDS + """
 from opa_properties_public
 where category_code_description in ('SINGLE FAMILY', 'MULTI FAMILY') and cartodb_id > {last}
 order by cartodb_id limit {page}
@@ -60,6 +65,66 @@ def building_form(new_desc, old_desc):
     return ""
 
 
+def phl_record(row):
+    """One lookup row (PHL_COLUMNS, all strings) from a row selected with PHL_FIELDS."""
+    rec = {c: "" if row.get(c) is None else str(row[c]).strip() for c in PHL_COLUMNS if c != "form"}
+    rec["form"] = building_form(row.get("bdesc"), row.get("bdesc_old"))
+    return rec
+
+
+# ---- property records by street address (listings whose home has not sold within the stored sales) ---------------
+
+PHL_BY_LOCATION_SQL = " ".join(("""
+select parcel_number p, location loc, unit, zip_code zip, category_code_description cat, """ + PHL_FIELDS + """
+from opa_properties_public
+where category_code_description in ('SINGLE FAMILY', 'MULTI FAMILY') and location in ({locations})
+""").split())
+PHL_LOCATION_OK = re.compile(r"[0-9]+[A-Z]? [0-9A-Z][0-9A-Z ]{0,58}")   # what phl_location builds; nothing else is sent
+PHL_LOCATION_CHUNK = 100       # addresses per query: ~3 kB of URL, well inside Carto's limits
+
+
+def _ordinal(n):
+    n = int(n)
+    return f"{n}{'TH' if 10 <= n % 100 <= 20 else {1: 'ST', 2: 'ND', 3: 'RD'}.get(n % 10, 'TH')}"
+
+
+def phl_location(key):
+    """The assessor's `location` text ("1214 S 21ST ST") for a listing_analysis.normalize_address key, or None when
+    the result holds anything but capital letters, digits and single spaces (addresses come from listing sites, so
+    they are treated as untrusted input)."""
+    if not key or not key[0] or not key[1]:
+        return None
+    words = [_ordinal(w) if w.isdigit() and len(w) <= 4 else w for w in key[1].split()]
+    loc = f"{key[0]} {' '.join(words)}"
+    return loc if PHL_LOCATION_OK.fullmatch(loc) and "  " not in loc else None
+
+
+def phl_records_by_location(client, locations):
+    """Current OPA property records for exact street addresses, single and multi family only, one Carto query.
+
+    Returns [{"p", "location", "unit", "zip", "type", "rec"}] where rec is a lookup row as harvest_philadelphia writes
+    it and type is "Single family", "Multi-family" or "Condo" (single family with a condo building description, as
+    engine/sources/philadelphia.py classifies sales; the model is fitted without condos). Owner and mailing fields are
+    never requested. Raises ValueError for a location outside PHL_LOCATION_OK, FetchError on a bad response."""
+    locations = list(locations)
+    if not locations or any(not isinstance(loc, str) or not PHL_LOCATION_OK.fullmatch(loc) for loc in locations):
+        raise ValueError("refusing an address outside the allowed characters")
+    quoted = ", ".join("'" + loc.replace("'", "''") + "'" for loc in locations)   # no quote can pass the check; belt and braces
+    rows = client.get_json(PHL_API, {"q": PHL_BY_LOCATION_SQL.format(locations=quoted)}).get("rows")
+    if not isinstance(rows, list):
+        raise FetchError("opa_properties_public: unexpected response")
+    out = []
+    for row in rows:
+        if not isinstance(row, dict) or not row.get("p") or not row.get("loc"):
+            continue
+        cat = str(row.get("cat") or "").upper()
+        condo = "CONDO" in f"{row.get('bdesc') or ''} {row.get('bdesc_old') or ''}".upper()
+        out.append({"p": str(row["p"]), "location": " ".join(str(row["loc"]).upper().split()),
+                    "unit": str(row.get("unit") or "").strip(), "zip": str(row.get("zip") or "").strip()[:5],
+                    "type": MULTI if cat == "MULTI FAMILY" else CONDO if condo else SINGLE, "rec": phl_record(row)})
+    return out
+
+
 def harvest_philadelphia(ctx, report, city="philadelphia"):
     name = lookup_name(city)
     held = ctx.store.read_lookup(name)
@@ -80,9 +145,7 @@ def harvest_philadelphia(ctx, report, city="philadelphia"):
             if row.get("p") not in wanted:
                 report["rejected"]["parcel has no stored sale"] = report["rejected"].get("parcel has no stored sale", 0) + 1
                 continue
-            rec = {c: "" if row.get(c) is None else str(row[c]).strip() for c in PHL_COLUMNS if c != "form"}
-            rec["form"] = building_form(row.get("bdesc"), row.get("bdesc_old"))
-            out[row["p"]] = rec
+            out[row["p"]] = phl_record(row)
             report["kept"] += 1
         if len(rows) < PHL_PAGE:
             break
@@ -254,6 +317,8 @@ CITIES = {
     "philadelphia": {
         "source": "Property characteristics", "dataset": "City of Philadelphia, OPA property records (opa_properties_public)",
         "harvest": harvest_philadelphia, "features": philadelphia_features, "spec": PHL_SPEC,
+        # current listings whose home has not sold within the stored sales: its record, looked up by street address
+        "by_address": {"location": phl_location, "fetch": phl_records_by_location, "chunk": PHL_LOCATION_CHUNK},
         "jobs": [("Property characteristics", "City of Philadelphia, OPA property records (opa_properties_public)",
                   harvest_philadelphia),
                  ("Assessment history", "City of Philadelphia, OPA certified values by tax year (assessments)",

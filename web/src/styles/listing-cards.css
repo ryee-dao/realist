@@ -209,17 +209,19 @@
 .few-mark:hover::after, .few-mark:focus::after { display: block; }
 .lc-photos .few-mark, .lp-find .few-mark { width: 16px; height: 16px; font-size: 11px; }
 
-/* Defect crops: the model's box outlined over the crop (decorative), and a short caption chip */
+/* Defect crops: an arrow pointing at the model's box (decorative), and a short caption chip */
 .lc-cropbox { position: relative; display: inline-block; line-height: 0; max-width: 100%; }
 .lc-cropbox.cover { display: block; width: 100%; height: 100%; }
 .lc-crops .lc-cropbox { width: 36px; height: 36px; }
 .lc-crops .lc-cropbox img { width: 36px; height: 36px; }
-.lc-mark {
-  position: absolute; border: 2px solid #fff; border-radius: 40%; pointer-events: none; box-sizing: border-box;
-  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.65), inset 0 0 0 1px rgba(0, 0, 0, 0.45); min-width: 8px; min-height: 8px;
-}
-.lc-mark.low { border-color: var(--warn); }
-.lc-crops .lc-mark { border-width: 1.5px; }
+.lc-arrow { position: absolute; width: 0; height: 0; pointer-events: none; }
+.lc-arrow svg { position: absolute; left: -3px; top: -8px; width: 40px; height: 16px; transform-origin: 3px 8px; overflow: visible; }
+.lc-arrow path { fill: none; stroke: #fff; stroke-width: 2.5; stroke-linecap: round; stroke-linejoin: round; }
+.lc-arrow path.halo { stroke: rgba(0, 0, 0, 0.75); stroke-width: 5; }
+.lc-arrow.low path:not(.halo) { stroke: var(--warn); }
+.lc-crops .lc-arrow { display: none; }   /* 36px thumbnails are too small for a mark */
+.lp-crop .lc-arrow svg { width: 26px; height: 10.4px; left: -2px; top: -5.2px; transform-origin: 2px 5.2px; }
+.lp-lightbox .lc-arrow svg { width: 64px; height: 25.6px; left: -4.8px; top: -12.8px; transform-origin: 4.8px 12.8px; }
 .lc-cap {
   position: absolute; left: 4px; bottom: 4px; max-width: calc(100% - 8px); padding: 2px 6px; border-radius: 4px;
   background: rgba(0, 0, 0, 0.72); color: #fff; font: 600 11px/1.3 var(--font); white-space: nowrap; overflow: hidden;

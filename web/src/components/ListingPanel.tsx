@@ -5,7 +5,7 @@ import { Area, City, useData } from '../lib/data'
 import { Ramp, Tier, tierStyle } from '../lib/grades'
 import { pct, usd, usdCompact } from '../lib/format'
 import { rentLines, rentValue, yieldRange } from '../lib/rent'
-import { Breakdown, Card, CropImage, LOW_MSG, Mark, money, monthYear, Pair, shortDate, WarnMark } from './listingParts'
+import { Breakdown, Card, CropImage, LOW_MSG, Mark, Point, money, monthYear, Pair, shortDate, WarnMark } from './listingParts'
 
 /** <city>/listing-detail/<name>.json, written by engine/listing_cards.py and loaded on first open. */
 export interface Detail {
@@ -13,7 +13,7 @@ export interface Detail {
   quotes?: { signal: string; label: string; quote: string }[]
   photo?: {
     findings: { type: string; label: string; room: string; rooms: number; confidence: number | null; evidence: string | null; crops: string[]
-      lowConfidence?: boolean; caption?: string; marks?: Mark[] }[]
+      lowConfidence?: boolean; caption?: string; marks?: Mark[]; points?: Point[] }[]
     missing: string[]; coverage: string | null; analysed: number | null; labelled: string[]; possiblyEdited: boolean
     condition: string | null; credit: string | null; creditUrl: string | null
   }
@@ -23,7 +23,7 @@ export interface Detail {
 
 const lower = (s: string) => s.charAt(0).toLowerCase() + s.slice(1)
 type Tab = 'overview' | 'photos' | 'price' | 'area'
-type Crop = { src: string; caption: string; evidence: string | null; short?: string; low?: boolean; mark?: Mark }
+type Crop = { src: string; caption: string; evidence: string | null; short?: string; low?: boolean; mark?: Mark; point?: Point }
 
 interface Props {
   c: Card; city: City; area: Area | null; areas: Area[]; tier: Tier | undefined; ramp: Ramp
@@ -53,7 +53,7 @@ export default function ListingPanel({ c, city, area, areas, tier, ramp, cityGro
 
   const crops: Crop[] = useMemo(() => (detail?.photo?.findings ?? []).flatMap((f) => f.crops.map((src, i) => ({
     src, caption: `${f.label}${f.room ? ` · ${f.room}` : ''}`, evidence: f.evidence, short: f.caption,
-    low: f.lowConfidence, mark: f.marks?.[i] ?? null }))), [detail])
+    low: f.lowConfidence, mark: f.marks?.[i] ?? null, point: f.points?.[i] }))), [detail])
   const e = c.price ? c.estimate : undefined
   const v = e ? Math.round(e.vsPct) : 0
   const publisher = c.links[0]?.source ?? c.source ?? 'the publisher'
@@ -148,7 +148,7 @@ function Photos({ c, detail, photoCity, crops, open, publisher }: { c: Card; det
         const at = n++
         return <button key={src} className="lp-crop" onClick={() => open(at)}
           aria-label={`Enlarge: ${f.label}${f.lowConfidence ? ` (${LOW_MSG.toLowerCase()})` : ''}`}>
-          <CropImage src={src} alt={`${f.label}, detected in a listing photo`} mark={f.marks?.[i]} low={f.lowConfidence}
+          <CropImage src={src} alt={`${f.label}, detected in a listing photo`} mark={f.marks?.[i]} point={f.points?.[i]} low={f.lowConfidence}
             caption={f.caption} cover /></button>
       })}</div>}
     </Section>)}
@@ -253,7 +253,7 @@ function Lightbox({ crops, at, go, credit, href }: { crops: Crop[]; at: number; 
     onTouchStart={(e) => { touch.current = e.touches[0].clientX }}
     onTouchEnd={(e) => { const s = touch.current; touch.current = null; if (s == null) return; const dx = e.changedTouches[0].clientX - s; if (Math.abs(dx) > 40) go(((dx < 0 ? at + 1 : at - 1) + n) % n) }}>
     <figure>
-      <CropImage key={cur.src} src={cur.src} alt={cur.caption} mark={cur.mark} low={cur.low} caption={cur.short} marks={marks}
+      <CropImage key={cur.src} src={cur.src} alt={cur.caption} mark={cur.mark} point={cur.point} low={cur.low} caption={cur.short} marks={marks}
         style={size ? { width: size } : undefined} onSize={(w) => setSize(Math.min(2 * w, 640))} />
       <figcaption>
         <b>{cur.caption}</b>{cur.low && <> <WarnMark /></>}{cur.evidence ? <span> — {cur.evidence}</span> : null}

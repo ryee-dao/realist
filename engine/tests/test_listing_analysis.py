@@ -4,10 +4,11 @@ import os
 import shutil
 import subprocess
 import tempfile
+import threading
 import unittest
 import unittest.mock
 from collections import Counter
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -822,8 +823,9 @@ class FindingTests(unittest.TestCase):
             self.assertEqual([len(f["crops"]) for f in p["findings"]], [2, 2])
             self.assertTrue(all(c.startswith("analysis/crops/philadelphia/") for f in p["findings"] for c in f["crops"]))
             self.assertEqual(set(p["findings"][0]), {"type", "item", "room", "rooms", "confidence", "lowConfidence", "photos",
-                                                     "evidence", "approximate", "positions", "crops", "marks"})
+                                                     "evidence", "approximate", "positions", "crops", "marks", "points"})
             self.assertEqual(len(p["findings"][0]["marks"]), len(p["findings"][0]["crops"]))
+            self.assertEqual(len(p["findings"][0]["points"]), len(p["findings"][0]["crops"]))
 
 
 class ExclusionAndHistoryTests(unittest.TestCase):
@@ -1345,6 +1347,233 @@ class RateLimitShapeTests(unittest.TestCase):
         self.assertIn("weekly 49%", why)
         high = entry(1, 0.0, rateLimits={"unknown": dict(info, unifiedWindows={"seven_day": {"utilization": 0.76}})})
         self.assertEqual(la.decide_mode([high], NOW)[0], "slow")
+
+
+class LocatingBackend(FakeBackend):
+    """FakeBackend with the locate pass. ``located``: results, exceptions, or callables of (number of crops, workdir)."""
+
+    def __init__(self, outputs, located=()):
+        super().__init__(outputs)
+        self.located, self.locate_prompts, self.locate_files = list(located), [], []
+        self.lock = threading.Lock()
+
+    def locate(self, prompt, workdir, files=None):
+        with self.lock:
+            self.locate_prompts.append(prompt)
+            self.locate_files.append(sorted(os.listdir(workdir)))
+            out = self.located.pop(0) if self.located else (lambda n, w: pts(*[(i, 0.5, 0.25, True) for i in range(n)]))
+        if isinstance(out, Exception):
+            raise out
+        return out(len(files), workdir) if callable(out) else out
+
+
+def pts(*rows):
+    return ok({"points": [{"i": i, "x": x, "y": y, "found": f} for i, x, y, f in rows]})
+
+
+def four_crop_home(root):
+    home = {"url": "https://a.test/f", "address": "1 Main St Philadelphia, PA 19123", "date": "2026-11-23",
+            "price": 100000, "beds": 2, "photos": [f"https://img.test/f{i}.jpg" for i in range(4)]}
+    write_city(root, "philadelphia", [home])
+    return good_tags(4, photos=[photo(i, "bedroom", f"bedroom-{1 + i // 2}") for i in range(4)],
+                     defects=[defect("water_stain_ceiling", i, 0.9, {"x": 0.1 * i, "y": 0.1, "w": 0.1, "h": 0.1})
+                              for i in range(4)])
+
+
+def run_tagging(root, backend, **kw):
+    return la.analyse_city(root, "philadelphia", backend=backend, loader=lambda u: (JPEG, "jpg"),
+                           cropper=lambda path, box: b"\xff\xd8\xff" + repr(box).encode(),
+                           now=datetime(2026, 11, 24, tzinfo=timezone.utc), log=lambda *_: None, **kw)
+
+
+def store_defects(root):
+    cache = json.loads(Path(root, "analysis", "philadelphia.json").read_text())["results"]
+    return [d for r in cache.values() for d in r["tags"]["defects"]]
+
+
+class LocateTests(unittest.TestCase):
+    def test_parse_points_validates_hard(self):
+        ans = la.parse_points({"points": [
+            {"i": 0, "x": 0.25, "y": 0.5, "found": True}, {"i": 1, "x": 0, "y": 0, "found": False},
+            {"i": 2, "x": 1.5, "y": 0.2, "found": True}, {"i": 3, "x": True, "y": 0.2, "found": True},
+            {"i": 4, "x": 0.1, "y": 0.1, "found": "yes"}, {"i": 5, "x": float("nan"), "y": 0.1, "found": True},
+            {"i": 9, "x": 0.1, "y": 0.1, "found": True}, {"i": 0, "x": 0.9, "y": 0.9, "found": True}, "junk",
+            {"i": 6, "y": 0.1, "found": True}]}, 7)
+        # 1: found=false; 2, 3, 5, 6: not a number in 0-1 -> asked, no point; 4: malformed -> asked again; 9: no such crop
+        self.assertEqual(ans, {0: {"x": 0.25, "y": 0.5}, 1: None, 2: None, 3: None, 5: None, 6: None})
+        self.assertEqual(la.parse_points([{"i": 0, "x": 0.123456, "y": 1, "found": True}], 1), {0: {"x": 0.123, "y": 1.0}})
+        with self.assertRaises(ValueError):
+            la.parse_points({"points": "none"}, 1)
+
+    def test_locate_uses_the_same_locked_down_call(self):
+        seen = {}
+
+        def capture(cmd, **kw):
+            seen.update(cmd=cmd, **kw)
+            return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(pts((0, 0.4, 0.6, True))), stderr="")
+        out = la.ClaudeCLI(run=capture, binary="python3").locate("Crop 0", tempfile.gettempdir(), ["crop-0.jpg"])
+        cmd = seen["cmd"]
+        self.assertEqual(json.loads(cmd[cmd.index("--json-schema") + 1]), la.LOCATE_SCHEMA)
+        self.assertEqual(cmd[cmd.index("--system-prompt") + 1], la.LOCATE_INSTRUCTIONS)
+        self.assertEqual((cmd[cmd.index("--tools") + 1], cmd[cmd.index("--model") + 1]), ("Read", "sonnet"))
+        self.assertIn("--restricted", cmd)
+        self.assertIn("structured_output", out)
+        self.assertEqual(json.loads(la.ClaudeCLI().command()[la.ClaudeCLI().command().index("--json-schema") + 1]),
+                         la.SCHEMA)   # tagging still uses the tag schema
+
+    def test_inline_points_are_stored_and_published_beside_crops(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            backend = LocatingBackend([ok(four_crop_home(root))],
+                                      [pts((0, 0.2, 0.3, True), (1, 0, 0, False), (3, 0.7, 0.8, True))])   # 2 unanswered
+            doc, report = run_tagging(root, backend)
+            self.assertEqual(report["tagged"], 1)
+            self.assertEqual(backend.locate_files, [[f"crop-{i}.jpg" for i in range(4)]])   # one call, only the crops
+            self.assertIn("water stain ceiling", backend.locate_prompts[0])
+            self.assertNotIn("img.test", backend.locate_prompts[0])
+            d = store_defects(root)
+            self.assertEqual([(x.get("point"), x.get("pointVersion")) for x in d],
+                             [({"x": 0.2, "y": 0.3}, 1), (None, 1), (None, None), ({"x": 0.7, "y": 0.8}, 1)])
+            self.assertNotIn("pointVersion", d[2])                       # never answered: asked again by the backfill
+            record = next(iter(json.loads(Path(root, "analysis", "philadelphia.json").read_text())["results"].values()))
+            self.assertEqual((record["calls"], record["locateCalls"]), (2, 1))
+            by_crop = {f"analysis/crops/philadelphia/{x['crop']}": x.get("point") for x in d}
+            findings = doc["listings"][0]["photo"]["findings"]
+            for f in findings:
+                self.assertEqual(f["points"], [by_crop[c] for c in f["crops"]])
+                self.assertEqual(len(f["points"]), len(f["marks"]))
+            self.assertEqual(sum(p is not None for f in findings for p in f["points"]), 2)
+            self.assertNotIn("img.test", Path(root, "philadelphia", "listing-tags.json").read_text())
+
+    def test_inline_failure_never_fails_the_listing(self):
+        for failure in (ValueError("claude -p failed"), ok({"points": "nope"}), {"is_error": False},
+                        la.BackendUnavailable("logged out")):
+            with self.subTest(failure=repr(failure)[:40]), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                with redirect_stderr(io.StringIO()):
+                    doc, report = run_tagging(root, LocatingBackend([ok(four_crop_home(root))], [failure]))
+                self.assertEqual((report["tagged"], report["stopped"]), (1, None))
+                self.assertTrue(all(x.get("crop") and "pointVersion" not in x for x in store_defects(root)))
+                self.assertTrue(all(f["points"] == [None] * len(f["crops"]) for f in doc["listings"][0]["photo"]["findings"]))
+
+    def test_inline_usage_limit_keeps_the_record_and_stops(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            tags = four_crop_home(root)
+            second = {"url": "https://a.test/g", "address": "2 Main St Philadelphia, PA 19123", "date": "2026-11-22",
+                      "price": 90000, "photos": [f"https://img.test/g{i}.jpg" for i in range(4)]}
+            rows = json.loads(Path(root, "philadelphia", "new-listings.json").read_text())["rows"] + [second]
+            write_city(root, "philadelphia", rows)
+            backend = LocatingBackend([ok(tags), ok(tags)], [la.UsageLimit("usage limit reached", 1764000000)])
+            doc, report = run_tagging(root, backend)
+            self.assertEqual(report["tagged"], 1)                        # the tagged listing is kept...
+            self.assertTrue(report["stopped"].startswith("usage limit"))  # ...and the run stops before the next one
+            self.assertEqual(len(backend.outputs), 1)
+            self.assertTrue(all("pointVersion" not in x for x in store_defects(root)))
+            ledger = [json.loads(l) for l in Path(root, "analysis", "usage-ledger.jsonl").read_text().splitlines()]
+            self.assertEqual([bool(e.get("limitHit")) for e in ledger], [False, True])
+            self.assertEqual(ledger[0]["calls"], 1)
+            with self.assertRaises(la.UsageLimit) as caught:   # a direct caller still sees the limit, with the record
+                la.analyse_photos(PhotoTaggingTests.row, LocatingBackend([ok(good_tags(3))], [la.UsageLimit("limit")]), 3,
+                                  loader=lambda u: (png(1000, 800), "png"), crop_dir=Path(tmp, "c"),
+                                  cropper=lambda path, box: b"\xff\xd8\xffx")
+            self.assertEqual(caught.exception.record["tags"]["defects"][0]["crop"][-4:], ".jpg")
+
+    def backfill_store(self, root):
+        crops = Path(root, "analysis", "crops", "philadelphia")
+        crops.mkdir(parents=True)
+        cache = {}
+        for n in range(3):
+            defects = []
+            for i in range(9):
+                name = f"c{n}-{i}.jpg"
+                (crops / name).write_bytes(b"\xff\xd8\xff" + name.encode())
+                defects.append(dict(det("peeling_paint", i, 0.9 - i / 100), crop=name))
+            defects.append(dict(det("peeling_paint", 0, 0.5), crop=f"c{n}-0.jpg"))           # shares crop and type: one job
+            defects.append(dict(det("water_stain_wall", 1, 0.5), crop="gone.jpg"))           # no crop file: not asked
+            defects.append(dict(det("other_damage", 2, 0.5), crop=f"c{n}-2.jpg", point=None, pointVersion=1))   # asked
+            defects.append(det("other_damage", 3, 0.5))                                       # no crop
+            cache[f"https://a.test/{n}"] = {"url": f"https://a.test/{n}", "tags": {"defects": defects}}
+        Path(root, "analysis", "philadelphia.json").write_text(json.dumps({"version": 1, "results": cache}))
+        return 27
+
+    def test_backfill_asks_each_crop_once_in_batches(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            n = self.backfill_store(tmp)
+            backend = LocatingBackend([], [])
+            logs = []
+            rep = la.locate_backfill(Path(tmp, "analysis"), "philadelphia", backend, workers=3, log=logs.append)
+            self.assertEqual((rep["candidates"], rep["asked"], rep["found"], rep["none"], rep["failed"], rep["calls"]),
+                             (n, n, n, 0, 0, 3))
+            self.assertEqual(sorted(len(f) for f in backend.locate_files), [7, 10, 10])
+            d = store_defects(tmp)
+            for x in d:
+                if x.get("crop") == "gone.jpg" or not x.get("crop"):
+                    self.assertNotIn("pointVersion", x)
+                elif x["type"] == "other_damage":
+                    self.assertIsNone(x["point"])                       # asked before: left alone
+                else:
+                    self.assertEqual((x["point"], x["pointVersion"]), ({"x": 0.5, "y": 0.25}, 1))
+            ledger = [json.loads(l) for l in Path(tmp, "analysis", "usage-ledger.jsonl").read_text().splitlines()]
+            self.assertEqual([(e["kind"], e["calls"]) for e in ledger], [("locate", 1)] * 3)
+            again = la.locate_backfill(Path(tmp, "analysis"), "philadelphia", backend, workers=3, log=logs.append)
+            self.assertEqual((again["candidates"], again["calls"]), (0, 0))   # nothing is asked twice
+
+    def test_backfill_resumes_after_a_limit_and_keeps_other_writes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            n = self.backfill_store(tmp)
+            store = Path(tmp, "analysis", "philadelphia.json")
+
+            def tagger_saves_meanwhile(count, workdir):   # another run saves the store while a call is in flight
+                doc = json.loads(store.read_text())
+                doc["results"]["https://a.test/new"] = {"url": "https://a.test/new", "tags": {"defects": []}}
+                store.write_text(json.dumps(doc))
+                return pts(*[(i, 0.1, 0.9, i % 2 == 0) for i in range(count)])
+            first = la.locate_backfill(Path(tmp, "analysis"), "philadelphia",
+                                       LocatingBackend([], [tagger_saves_meanwhile, la.UsageLimit("limit reached")]),
+                                       workers=1, log=lambda *_: None)
+            self.assertTrue(first["stopped"].startswith("usage limit"))
+            self.assertEqual((first["asked"], first["found"], first["none"], first["failed"], first["notReached"]),
+                             (20, 5, 5, 10, n - 20))
+            self.assertIn("https://a.test/new", json.loads(store.read_text())["results"])
+            asked = [x for x in store_defects(tmp) if x.get("pointVersion") and x["type"] == "peeling_paint"]
+            self.assertEqual(len(asked), 12)                             # 10 jobs, two of them on two defects each
+            self.assertIn({"x": 0.1, "y": 0.9}, [x["point"] for x in asked])
+            rest = la.locate_backfill(Path(tmp, "analysis"), "philadelphia", LocatingBackend([], []), workers=2,
+                                      limit=5, log=lambda *_: None)
+            self.assertEqual((rest["candidates"], rest["asked"], rest["calls"]), (5, 5, 1))
+            rest = la.locate_backfill(Path(tmp, "analysis"), "philadelphia", LocatingBackend([], []), log=lambda *_: None)
+            self.assertEqual((rest["candidates"], rest["found"], rest["stopped"]), (n - 15, n - 15, None))
+
+    def test_backfill_cli_then_publish(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with redirect_stderr(io.StringIO()):
+                run_tagging(root, LocatingBackend([ok(four_crop_home(root))], [ValueError("down")]))   # no points yet
+            rows = json.loads(Path(root, "philadelphia", "new-listings.json").read_text())["rows"]
+            write_city(root, "philadelphia", rows, merged=True)          # the cards are built from merged listings
+            areas = json.loads(Path(root, "philadelphia", "areas.json").read_text())
+            Path(root, "philadelphia", "areas.json").write_text(json.dumps(
+                {"areas": [dict(a, key=a["name"]) for a in areas["areas"]]}))   # the cards need area keys
+            backend = LocatingBackend([], [])
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                code = la.main(["--city", "philadelphia", "--output", tmp, "--locate-points", "--locate-workers", "2"],
+                               make_backend=lambda **k: backend)
+            self.assertEqual(code, 0)
+            self.assertIn("4 crops asked", buf.getvalue())
+            self.assertIn("4 points found", buf.getvalue())
+            self.assertFalse(backend.prompts)                            # no tagging call
+            with redirect_stdout(io.StringIO()):
+                la.main(["--city", "philadelphia", "--output", tmp, "--no-photos"], make_backend=lambda **k: backend)
+            tags = json.loads(Path(root, "philadelphia", "listing-tags.json").read_text())
+            findings = tags["listings"][0]["photo"]["findings"]
+            self.assertEqual([f["points"] for f in findings], [[{"x": 0.5, "y": 0.25}] * 2] * 2)
+            cards = json.loads(Path(root, "philadelphia", "listing-cards.json").read_text())
+            crops = [c for card in cards["cards"] for c in (card.get("photo") or {}).get("crops") or []]
+            self.assertEqual([c["point"] for c in crops], [{"x": 0.5, "y": 0.25}] * 4)
+            details = [json.loads(p.read_text()) for p in Path(root, "philadelphia", "listing-detail").glob("*.json")]
+            self.assertEqual([f["points"] for d in details for f in d["photo"]["findings"]], [[{"x": 0.5, "y": 0.25}] * 2] * 2)
 
 
 class CLITests(unittest.TestCase):

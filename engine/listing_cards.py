@@ -4,7 +4,9 @@
     python3 -m engine.listing_cards --city philadelphia --store store
     python3 -m engine.listing_cards --listings harvested-listings   listings.json read from another folder
 
-Reads files already on disk and fetches nothing:
+Reads files already on disk, and fetches only one thing (Philadelphia, skipped with --offline): the property record
+of a listed home whose address matches no recorded sale, by street address from the city's OPA table, a few batched
+queries per run, cached in the store as _lookups/<city>_address_records.json for 30 days (AddressRecords):
 
 - <city>/listings.json (engine/live_listings.py): one row per home, with asking price, list date, publishers and facts;
 - <city>/listing-tags.json (engine/listing_analysis.py, optional): description signals, photo findings, defect crops;
@@ -16,8 +18,10 @@ Each home is placed in an area with the boundary file (point in polygon) when it
 one, otherwise with listing_analysis.AreaIndex (same address among recorded sales, nearest recorded sale, ZIP code).
 
 The headline number compares the asking price with one of, best first:
-  "model"   the hedonic model's estimate for the parcel, when the listing's address matches a recorded sale whose
-            parcel has a property record (Philadelphia). Range and typical error come from the model's backtest.
+  "model"   the hedonic model's estimate for the parcel, when the listing's address names exactly one parcel with a
+            property record (Philadelphia): a recorded sale's parcel, else a single or multi family parcel found by
+            address (not condos, which the model is fitted without). A home with no recorded sale gets no lastSale.
+            Range and typical error come from the model's backtest.
   "ppsf"    the area's recorded 12-month median $/sq ft times the listing's floor area (not for condos or co-ops,
             whose sales carry no floor area).
   "median"  the area's recorded 12-month median sale price (ignores size).
@@ -32,13 +36,14 @@ import math
 import os
 import re
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 
 from .analytics import area_label
 from .cities import CITIES as CITY_CFG
 from .listing_analysis import AreaIndex, infer_type, normalize_address, text_of
+from .schema import MULTI, SINGLE
 
 CITY_IDS = ("philadelphia", "nyc", "chicago")
 MODEL_ITEM_PCT = 3.0          # a model driver worth at least this much (either way) becomes a plus or minus item
@@ -47,6 +52,7 @@ GROWTH_ITEM_PTS = 2.0         # area price growth this many points from the city
 INCIDENT_ITEM_RATIO = 0.2     # incidents 20% above or below the city figure become an item
 PARTS_SHOWN = 8               # model contributions kept per card; the rest are summed into "Other features"
 NO_PPSF_TYPES = {"Condo", "Co-op"}
+ATYPICAL_RATIO = 2.0          # asking over this multiple of the estimate: the home is not what the estimate describes
 PPSF_PLAUSIBLE = (1 / 3, 3.0)  # asking $/sq ft outside this multiple of the area's: the floor area is likely wrong
 RESALE_YEARS = 3              # a recorded sale this recent, well under the asking price, suggests work since
 RESALE_RATIO = 1.5
@@ -116,10 +122,14 @@ class ParcelIndex:
         self.cfg = CITIES.get(city)
         self.city = city
         self.by_address = {}
+        self.by_parcel = {}       # parcel -> its latest stored sale (for a parcel found by AddressRecords instead)
         self.lookup = store.read_lookup(lookup_name(city)) if self.cfg else {}
         if not self.lookup:
             return
         for row in store.iter_rows(city):
+            if row.get("parcel") in self.lookup and (row["parcel"] not in self.by_parcel
+                                                     or row["date"] > self.by_parcel[row["parcel"]]["date"]):
+                self.by_parcel[row["parcel"]] = row
             key = normalize_address(row.get("address"), city)
             if not key or not row.get("parcel") or row["parcel"] not in self.lookup:
                 continue
@@ -150,10 +160,112 @@ def _to_int(v):
 
 
 def model_features(cfg, sale, record, today):
-    """The model's inputs for a home sold before, priced today: today's age, the current property record."""
-    sale = {"date": today, "type": sale.get("type"), "sqft": _to_int(sale.get("sqft")),
-            "yb": _to_int(sale.get("year_built")), "beds": _to_int(sale.get("beds"))}
+    """The model's inputs for a home priced today: today's age, the current property record.
+
+    From the sale row the features read only the home type and, where the record has none, floor area, year built and
+    bedrooms. In Philadelphia those three are the same OPA fields the record holds (the sale harvest joins
+    opa_properties_public), so a home with no recorded sale (sale=None) is priced from its record alone, with the type
+    from its OPA category (record["type"], set by AddressRecords). None when the home type is unknown."""
+    src = sale or {}
+    home_type = src.get("type") or (record or {}).get("type")
+    if not home_type:
+        return None
+    sale = {"date": today, "type": home_type, "sqft": _to_int(src.get("sqft")),
+            "yb": _to_int(src.get("year_built")), "beds": _to_int(src.get("beds"))}
     return cfg["features"](sale, record)
+
+
+ADDRESS_REFRESH_DAYS = 30      # a cached address lookup (found or not) is asked again after this many days
+
+
+def address_cache_path(store, city):
+    root = getattr(store, "root", None)
+    return Path(root, "_lookups", f"{city}_address_records.json") if root else None
+
+
+class AddressRecords:
+    """Property records by street address, for listings whose address matches no recorded sale (a home that has not
+    sold within the stored sales). One batched query per ~100 new addresses; answers, including "no such parcel", are
+    cached in the store for ADDRESS_REFRESH_DAYS. A failed lookup is logged once and the cards are built without it."""
+
+    def __init__(self, store, city, client, today, log=print):
+        from .characteristics import CITIES
+        self.city, self.client, self.today, self.log = city, client, today, log
+        self.spec = (CITIES.get(city) or {}).get("by_address")
+        self.path = address_cache_path(store, city)
+        self.entries = {}          # normalised street address "1214 S 21 ST" -> {"fetched": date, "parcels": [...]}
+        self.index = {}            # normalize_address key[:3] -> {parcel: entry}
+        cached = read_json(self.path) if self.path else None
+        oldest = (datetime.fromisoformat(today).date() - timedelta(days=ADDRESS_REFRESH_DAYS)).isoformat()
+        for street, e in ((cached or {}).get("addresses") or {}).items():
+            if isinstance(e, dict) and isinstance(e.get("parcels"), list) and str(e.get("fetched") or "") >= oldest:
+                self.entries[street] = e
+        self.fetched = 0
+
+    @staticmethod
+    def street(key):
+        return f"{key[0]} {key[1]}"
+
+    def prepare(self, addresses):
+        """Look up every address not answered in the cache (as few queries as practical), then index the answers."""
+        if not self.spec:
+            return self
+        wanted = {}
+        for address in addresses:
+            key = normalize_address(address, self.city)
+            loc = self.spec["location"](key) if key else None
+            if loc and self.street(key) not in self.entries:
+                wanted.setdefault(loc, self.street(key))
+        locs = sorted(wanted) if self.client is not None else []
+        chunk = self.spec.get("chunk") or 100
+        try:
+            for i in range(0, len(locs), chunk):
+                part = locs[i:i + chunk]
+                found = {}
+                for p in self.spec["fetch"](self.client, part):
+                    found.setdefault(p["location"], []).append(p)
+                for loc in part:          # an address with no single or multi family parcel is cached as such
+                    self.entries[wanted[loc]] = {"fetched": self.today, "parcels": found.get(loc, [])}
+                self.fetched += len(part)
+        except Exception as exc:   # noqa: BLE001  the cards never depend on this lookup
+            self.log(f"{self.city}: property records by address not looked up for {len(locs) - self.fetched} "
+                     f"listings ({type(exc).__name__}: {str(exc)[:120]}); they keep the area comparison")
+        if self.fetched and self.path:
+            try:
+                write_json(self.path, {"about": "OPA property records by street address for current listings "
+                                                "(engine/listing_cards.py AddressRecords); refreshed after "
+                                                f"{ADDRESS_REFRESH_DAYS} days", "addresses": self.entries})
+            except OSError as exc:
+                self.log(f"{self.city}: address lookups not cached ({exc})")
+        for street, e in self.entries.items():
+            for p in e["parcels"]:
+                if not isinstance(p, dict) or not p.get("p") or not isinstance(p.get("rec"), dict):
+                    continue
+                key = normalize_address(p.get("location", "") + (f" #{p['unit']}" if p.get("unit") else ""), self.city)
+                if key and self.street(key) == street:
+                    self.index.setdefault(key[:3], {})[p["p"]] = p
+        return self
+
+    def match(self, address, zip_code=None, parcels=None):
+        """(sale row or None, property record) when the address names exactly one parcel after ZIP disambiguation
+        and that parcel is not a condo (the model is fitted without condos); else (None, None). A parcel with a stored
+        sale and property record is returned as ParcelIndex would; any other carries its record and OPA home type."""
+        key = normalize_address(address, self.city)
+        if not key:
+            return None, None
+        hits = self.index.get(key[:3]) or {}
+        zip_code = (zip_code or key[3] or "")[:5]
+        if len(hits) > 1 and zip_code:
+            hits = {p: e for p, e in hits.items() if e.get("zip", "")[:5] == zip_code}
+        if len(hits) != 1:
+            return None, None
+        p = next(iter(hits.values()))
+        if p.get("type") not in (SINGLE, MULTI):
+            return None, None
+        if parcels is not None and p["p"] in parcels.by_parcel:
+            sale = parcels.by_parcel[p["p"]]
+            return sale, parcels.lookup[sale["parcel"]]
+        return None, {**p["rec"], "type": p["type"]}
 
 
 def _driver_text(name, level, pct, features, predictor):
@@ -333,8 +445,9 @@ def photo_summary(photo):
         named = f"{label} ({', '.join(items[:3])})" if items else label
         minus.append({"text": f"{named} · {_plural(rooms, 'room')}", "kind": "photo",
                       "why": "; ".join(f"{str(f.get('room', '')).replace('_', ' ')}: {f.get('evidence', '')}" for f in found)})
-        crops += [{"src": c, "label": finding_label(f), "caption": finding_caption(f), "low": _low(f),
-                   "mark": m} for f in found for c, m in zip(f.get("crops") or [], (f.get("marks") or []) + [None] * 99)]
+        crops += [{"src": c, "label": finding_label(f), "caption": finding_caption(f), "low": _low(f), "mark": m, "point": p}
+                  for f in found for c, m, p in zip(f.get("crops") or [], (f.get("marks") or []) + [None] * 99,
+                                                    (f.get("points") or []) + [None] * 99)]
     editing = photo.get("editing") or {}
     if editing.get("labelled"):
         minus.append({"text": "Photos virtually staged (labelled)", "kind": "photo",
@@ -385,6 +498,8 @@ def card_for(row, ctx):
         area = ctx["areas_by_key"].get(f"{name}|") if name else None
         mapping = "boundary" if area else mapping
     sale, record = ctx["parcels"].match(row.get("address"), row.get("zip")) if ctx["parcels"] else (None, None)
+    if record is None and ctx.get("addresses") and home_type not in NO_PPSF_TYPES:   # not sold within our sales
+        sale, record = ctx["addresses"].match(row.get("address"), row.get("zip"), ctx["parcels"])
     if area is None:
         found, how, _, _ = ctx["index"].locate(row)
         area, mapping = (found, how) if found else (None, "none")
@@ -429,7 +544,7 @@ def card_for(row, ctx):
     estimate = None
     if predictor and record is not None and area:
         features = model_features(ctx["parcels"].cfg, sale, record, ctx["today"])
-        est = model_estimate(predictor, features, card["area"]["key"], card["area"]["name"])
+        est = model_estimate(predictor, features, card["area"]["key"], card["area"]["name"]) if features else None
         if est:
             err, band = band_error(predictor, "model", est["value"])
             estimate = {"kind": "model", "value": nice(est["value"]), "base": nice(est["base"]), "area": est["area"],
@@ -448,6 +563,11 @@ def card_for(row, ctx):
     if (estimate is None and area and card["sold"].get("vsMedianPct") is not None and home_type
             and home_type == area.get("topType")):
         estimate = {"kind": "median", "value": card["sold"]["median12"], "error": None}
+    # An asking price over twice the estimate says the estimate is describing a different home (typically a full
+    # renovation in a low-priced area, which neither the property record nor the area's sales capture), so no
+    # number is shown. Far-below asking prices are kept: those are the homes the page exists to surface.
+    if estimate and price and price > ATYPICAL_RATIO * estimate["value"]:
+        estimate, no_estimate = None, no_estimate or "Likely renovated or atypical"
     if estimate is None or not price:
         card["noEstimate"] = ("No asking price" if not price else no_estimate if no_estimate
                               else "Not placed in an area" if not area
@@ -546,7 +666,8 @@ def detail_for(card, row, tag, sale, ctx):
                           "room": str(f.get("room") or "").replace("_", " "), "rooms": f.get("rooms") or 1,
                           "confidence": f.get("confidence"), "lowConfidence": _low(f), "caption": finding_caption(f),
                           "evidence": f.get("evidence"), "crops": f.get("crops") or [],
-                          "marks": [m for _, m in zip(f.get("crops") or [], (f.get("marks") or []) + [None] * 99)]}
+                          "marks": [m for _, m in zip(f.get("crops") or [], (f.get("marks") or []) + [None] * 99)],
+                          "points": [p for _, p in zip(f.get("crops") or [], (f.get("points") or []) + [None] * 99)]}
                          for f in photo.get("findings") or []],
             "missing": (photo.get("coverage") or {}).get("missing") or [],
             "coverage": (photo.get("coverage") or {}).get("rating"),
@@ -599,8 +720,18 @@ def city_figures(root, city):
             "ppsf": _num((meta.get("kpi") or {}).get("ppsf"))}
 
 
-def build(root, city, store=None, now=None, listings_root=None):
-    """The listing-cards document for one city, or None when the city has no merged listings."""
+def lookup_client():
+    """The engine's HTTP client for the property-record lookup: two tries and a short timeout, so an unreachable API
+    costs the card build seconds, not minutes (AddressRecords logs the one failure line itself)."""
+    from .http import Client
+    return Client(min_interval=0.5, retries=2, timeout=60, log=lambda *_: None)
+
+
+def build(root, city, store=None, now=None, listings_root=None, client=None, log=print):
+    """The listing-cards document for one city, or None when the city has no merged listings.
+
+    With a `client` (engine/http.py), listings whose address matches no recorded sale have their property record
+    looked up by address (AddressRecords); without one nothing is fetched and only cached answers are used."""
     root = Path(root)
     now = now or datetime.now(timezone.utc)
     listings = read_json(Path(listings_root or root) / city / "listings.json")
@@ -633,6 +764,10 @@ def build(root, city, store=None, now=None, listings_root=None):
         if t.get("inSnapshot") is False and not set([t.get("url")] + list(t.get("urls") or [])) & seen:
             rows.append({"url": t["url"], "address": t.get("address"), "date": t.get("date"), "price": t.get("price"),
                          "source": t.get("source"), "inSnapshot": False})
+    if parcels is not None and (parcels.cfg or {}).get("by_address"):
+        unmatched = [r.get("address") for r in rows if parcels.match(r.get("address"), r.get("zip"))[1] is None
+                     and infer_type(r, city) not in NO_PPSF_TYPES]
+        ctx["addresses"] = AddressRecords(store, city, client, ctx["today"], log).prepare(unmatched)
     cards = [card_for(r, ctx) for r in rows]
     details = {}
     for c in cards:
@@ -660,8 +795,8 @@ def build(root, city, store=None, now=None, listings_root=None):
     }
 
 
-def publish(root, city, store=None, now=None, log=print, listings_root=None):
-    doc = build(root, city, store, now, listings_root)
+def publish(root, city, store=None, now=None, log=print, listings_root=None, client=None):
+    doc = build(root, city, store, now, listings_root, client, log)
     if doc is None:
         return None
     details = doc.pop("_details")
@@ -684,9 +819,10 @@ def refresh(root, cities=CITY_IDS, store_dir="store", log=print):
     """Rebuild the cards after listings or tags change. Never raises: a failure here must not lose the harvest."""
     from .store import Store
     store = Store(store_dir) if store_dir and os.path.isdir(store_dir) else None
+    client = lookup_client() if store is not None else None
     for city in cities:
         try:
-            publish(root, city, store, log=log)
+            publish(root, city, store, log=log, client=client)
         except Exception as exc:   # noqa: BLE001  the cards are a derived view; the next run rebuilds them
             log(f"{city}: listing cards not rebuilt ({type(exc).__name__}: {exc})")
 
@@ -698,11 +834,14 @@ def main(argv=None):
     parser.add_argument("--store", default="store", help="harvest store (boundaries, parcel records); optional")
     parser.add_argument("--listings", type=Path, help="where <city>/listings.json is, if not under --output (the merged "
                                                        "file itself need not be published with the site)")
+    parser.add_argument("--offline", action="store_true", help="do not look up property records by address; "
+                                                               "use only the store and the cached lookups")
     args = parser.parse_args(argv)
     from .store import Store
     store = Store(args.store) if os.path.isdir(args.store) else None
+    client = lookup_client() if store is not None and not args.offline else None
     for city in [args.city] if args.city else CITY_IDS:
-        if publish(args.output, city, store, listings_root=args.listings) is None:
+        if publish(args.output, city, store, listings_root=args.listings, client=client) is None:
             print(f"{city}: no listings.json, skipped")
     return 0
 
