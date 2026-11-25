@@ -43,9 +43,9 @@ function Item({ id, label, href, on }: { id: string; label: string; href: string
 /** Pages that take a city. Old hashes keep working: #/city/sales now opens Sold prices. */
 const CITY_PAGES = ['find', 'areas', 'listings', 'compare', 'market', 'sold', 'drivers', 'explore']
 const ALIAS: Record<string, string> = { sales: 'sold' }
-const MAIN = [['find', 'Find areas'], ['areas', 'Areas'], ['listings', 'New listings'], ['compare', 'Crime']]
-const RESEARCH = [['market', 'Market'], ['sold', 'Sold prices'], ['drivers', 'Price drivers'], ['explore', 'Explore']]
-const LABEL: Record<string, string> = Object.fromEntries([...MAIN, ...RESEARCH, ['pipeline', 'Data pipeline'], ['about', 'About']])
+const MAIN = [['find', 'Find areas'], ['listings', 'New listings']]
+const RESEARCH = [['areas', 'Neighborhoods'], ['compare', 'Crime'], ['market', 'Market'], ['sold', 'Sold prices'], ['drivers', 'Price drivers'], ['explore', 'Explore']]
+const LABEL: Record<string, string> = Object.fromEntries([...MAIN, ...RESEARCH, ['pipeline', 'Data Engine'], ['about', 'About']])
 
 export default function App() {
   const route = useRoute()
@@ -73,7 +73,7 @@ export default function App() {
       <aside className={`side ${menu ? 'menu-open' : ''}`}>
         <div className="side-top">
           <a className="brand" href="#/">
-            <svg viewBox="0 0 32 32" width="22" height="22" aria-hidden="true"><path d="M6 25V13h4v12zm7 0V6h4v19zm7 0v-9h4v9z" fill="currentColor" /></svg>
+            <svg viewBox="0 0 32 32" width="22" height="22" aria-hidden="true"><path d="M3 15.500L16 4l13 11.500" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" /><path d="M7 28v-8h4v8zM14 28V15h4v13zM21 28V18h4v10z" fill="currentColor" /></svg>
             REALIST
           </a>
           <button className={`menu-btn ${inMore ? 'on' : ''}`} aria-expanded={menu} aria-controls="side-more" onClick={() => setMenu(!menu)}>
@@ -87,8 +87,8 @@ export default function App() {
         <div className="side-more" id="side-more">
           <div className="side-label">Research</div>
           <nav className="side-group" aria-label="Research">{RESEARCH.map(item)}</nav>
-          <div className="side-label">Engine</div>
-          <nav className="side-group" aria-label="Engine">{item(['pipeline', 'Data pipeline'])}{item(['about', 'About'])}</nav>
+          <div className="side-label">Site</div>
+          <nav className="side-group" aria-label="Site">{item(['pipeline', 'Data Engine'])}{item(['about', 'About'])}</nav>
           <div className="side-foot">
           {last && (
             <a className="status" href="#/pipeline">

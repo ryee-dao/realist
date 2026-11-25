@@ -254,7 +254,11 @@ def _address_parts(address, zip_code=None):
         return None
     text = unescape(address).upper()
     zip_code = zip_code or zip_of(text)
-    head = re.sub(r"[^\w#\s-]", " ", text.split(",")[0]).replace("#", " # ")
+    segments = text.split(",")
+    head = segments[0]
+    if len(segments) > 1 and re.match(r"\s*(?:#|(?:UNIT|APT|APARTMENT|SUITE|STE)\b)", segments[1]):
+        head += " " + segments[1]  # the unit after a comma: "2306 W Chicago, Unit 3, Chicago, IL"
+    head = re.sub(r"[^\w#\s-]", " ", head).replace("#", " # ")
     tokens = head.split()
     if not tokens or not re.match(r"\d", tokens[0]):
         return None
@@ -290,7 +294,13 @@ def _address_parts(address, zip_code=None):
         unit = None
     if not street:
         return None
+    # "St Marks Ave" and "Saint Marks Ave": a leading ST (after any direction) is Saint, never the suffix
+    lead = 1 if len(street) > 2 and street[0] in DIRECTIONS.values() else 0
+    if len(street) > lead + 1 and street[lead] == "ST":
+        street[lead] = "SAINT"
     unit = re.sub(r"[^A-Z0-9]", "", unit or "").lstrip("0") or None
+    if unit is None and re.fullmatch(r"\d+[A-Z]", number):
+        number, unit = number[:-1], number[-1]  # "271E Signs Rd" is "271 Signs Rd # E"
     core = street[:len(street) - (trailing is not None) - bool(ends)]
     return number, street, core, unit, zip_code
 

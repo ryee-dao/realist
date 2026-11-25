@@ -288,6 +288,12 @@ class MergeTests(unittest.TestCase):
         self.assertNotEqual(feed.home_key("220 S Green St #4S, Chicago, IL 60607"), feed.home_key("220 S Green St #5S, Chicago, IL 60607"))
         self.assertNotEqual(feed.home_key("12 Elm St, Chicago, IL 60614"), feed.home_key("12 Elm St, Chicago, IL 60640"))
         self.assertIsNone(feed.home_key("Lot 5 Main St"))
+        # Saint written two ways, a lettered house number against a unit, and a unit after a comma
+        self.assertEqual(feed.home_key("1389 St Marks Ave Brooklyn, NY 11233"), feed.home_key("1389 Saint Marks Ave, Brooklyn, NY 11233"))
+        self.assertEqual(feed.home_key("271E Signs Rd, Staten Island, NY 10314"), feed.home_key("271 Signs Rd # E Staten Island, NY 10314"))
+        self.assertEqual(feed.home_key("2306 W Chicago, Unit 3, Chicago, IL 60622"), "2306 W CHICAGO #3 60622")
+        self.assertEqual(feed.street_core("2306 W Chicago, Unit 3, Chicago, IL 60622"), feed.street_core("2306 W Chicago Avenue #3, Chicago, IL 60622"))
+        self.assertEqual(feed.home_key("12 Main St, Chicago, IL 60614"), "12 MAIN ST 60614")   # a trailing ST stays the suffix
 
     def test_ranges_stray_zeros_and_repeated_directions(self):
         same = [("743-747 S  Mildred St, Philadelphia, PA 19147", "743 S Mildred Street, Philadelphia, PA 19147"),

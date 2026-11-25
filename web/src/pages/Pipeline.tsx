@@ -53,7 +53,7 @@ export default function Pipeline({ index, status }: { index: Index; status: Stat
     <div className="pipe">
       <div className="page-head">
         <div>
-          <h1>Data pipeline</h1>
+          <h1>Data Engine</h1>
           <p className="muted">Public records in, checked numbers out.</p>
         </div>
         <div className="pipe-top">
