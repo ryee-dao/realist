@@ -20,7 +20,8 @@ export interface Route { city: string | null; page: string }
 function parse(): Route {
   // a page may keep its own state after '?' in the hash (Explore does), so the route is the part before it
   const parts = window.location.hash.replace(/^#\/?/, '').split('?')[0].split('/').filter(Boolean)
-  if (parts[0] === 'pipeline' || parts[0] === 'about') return { city: null, page: parts[0] }
+  if (parts[0] === 'engine' || parts[0] === 'pipeline') return { city: null, page: 'pipeline' }   // #/engine; #/pipeline is the old address
+  if (parts[0] === 'about') return { city: null, page: 'about' }
   return { city: parts[0] || null, page: parts[1] || 'find' }
 }
 

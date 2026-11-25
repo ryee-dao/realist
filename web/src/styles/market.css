@@ -42,3 +42,5 @@
 .card-head .few-mark { position: static; }
 .card-head .few-mark::after { right: auto; left: 0; top: calc(100% + 4px); }
 .few-mark:hover::after, .few-mark:focus::after { display: block; }
+/* long names ("Bedford Park/Norwood Bronx") wrap instead of pushing the table past the card */
+.movers td:first-child { white-space: normal; }

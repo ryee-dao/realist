@@ -1,12 +1,12 @@
 import '../styles/finder.css'
 import '../styles/listing-cards.css'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { Area, Areas, City, useData } from '../lib/data'
 import { Theme } from '../lib/hooks'
 import { usdCompact } from '../lib/format'
 import { activityPercentiles, percentiles, rankPool, Tier, TIERS, tierStyle, useRamp } from '../lib/grades'
-import ListingsMap, { ListingPin } from '../components/ListingsMap'
+import type { ListingPin } from '../components/ListingsMap'
 import ListingPanel from '../components/ListingPanel'
 import { Breakdown, Card, CardsDoc, CropImage, Item, LOW_MSG, money, monthYear, shortDate, WarnMark } from '../components/listingParts'
 import { safeUrl } from '../lib/safeUrl'
@@ -86,6 +86,13 @@ function useDocTheme(): Theme {
   return theme
 }
 
+// The map (and Leaflet) loads as its own chunk. On a phone the page opens on the list with the map hidden, so the
+// map is only made once Map is first chosen; where it shows beside the list, its chunk starts loading straight away.
+const PHONE = '(max-width: 760px)'   // the breakpoint where styles/listing-cards.css stacks the map and list
+const loadMap = () => import('../components/ListingsMap')
+const ListingsMap = lazy(loadMap)
+if (!window.matchMedia(PHONE).matches) loadMap().catch(() => {})
+
 const ago = (days: number) => days <= 0 ? 'today' : days === 1 ? 'yesterday' : days < 60 ? `${days} days ago` : `${Math.round(days / 30)} months ago`
 const pinLabel = (n: number) => (n >= 995_000 ? `$${(n / 1e6).toFixed(n >= 9_950_000 ? 0 : 1).replace(/[.]0$/, '')}M` : `$${Math.max(1, Math.round(n / 1e3))}K`)
 const ageClass = (days: number): 0 | 1 | 2 => (days < 30 ? 0 : days < 90 ? 1 : 2)
@@ -102,6 +109,17 @@ export default function NewListings({ city }: { city: City }) {
   const [hover, setHover] = useState<string | null>(null)
   const [picked, setPicked] = useState<string | null>(null)
   const [view, setView] = useState<'list' | 'map'>('list')
+  // made once it would be seen (beside the list, or Map chosen on a phone), then kept so its place and zoom stay
+  const [mapSeen, setMapSeen] = useState(() => !window.matchMedia(PHONE).matches)
+  const mapOn = mapSeen || view === 'map'
+  useEffect(() => { if (view === 'map') setMapSeen(true) }, [view])
+  useEffect(() => {
+    if (mapSeen) return
+    const mq = window.matchMedia(PHONE)
+    const on = () => { if (!mq.matches) setMapSeen(true) }   // e.g. a phone turned to landscape: the map now shows
+    mq.addEventListener('change', on)
+    return () => mq.removeEventListener('change', on)
+  }, [mapSeen])
   const [f, setF] = useState<Filters>(readFilters)
   const [drawer, setDrawer] = useState(false)
   const listRef = useRef<HTMLDivElement>(null)
@@ -110,7 +128,7 @@ export default function NewListings({ city }: { city: City }) {
   useEffect(() => writeJSON(W_KEY, w), [w])
   useEffect(() => writeJSON(HIDE_KEY(city.id), hidden), [hidden, city.id])
   useEffect(() => writeFilters(f), [f])
-  useEffect(() => setTitle(document.querySelector('.page-head h1')), [])
+  useEffect(() => setTitle(document.querySelector('.page-head .title-row')), [])
   const set = (patch: Partial<Filters>) => setF((x) => ({ ...x, page: '1', ...patch }))
 
   const timeZone = city.id === 'chicago' ? 'America/Chicago' : 'America/New_York'
@@ -274,8 +292,10 @@ export default function NewListings({ city }: { city: City }) {
 
     <div className={`lc-split view-${view}`}>
       <div className="lc-mapcol">
-        <ListingsMap center={city.center} zoom={city.zoom} pins={pins} active={active} focus={picked} onHover={setHover} onPick={(id) => { pick(id); openHome(id) }}
-          height="var(--lc-map-h)" visible={view === 'map'} />
+        {mapOn && <Suspense fallback={<div className="map lc-map" style={{ height: 'var(--lc-map-h)' }} />}>
+          <ListingsMap center={city.center} zoom={city.zoom} pins={pins} active={active} focus={picked} onHover={setHover} onPick={(id) => { pick(id); openHome(id) }}
+            height="var(--lc-map-h)" visible={view === 'map'} />
+        </Suspense>}
         <div className="map-legend lc-legend" aria-label="Pin style by days on market">
           <span><i className="lc-pin a0">$</i>&lt; 30 days</span><span><i className="lc-pin a1">$</i>30–90</span><span><i className="lc-pin a2">$</i>90+</span>
           <span><i className="lc-pin a0 off dot" />other pages</span>

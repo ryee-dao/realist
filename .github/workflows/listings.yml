@@ -2,6 +2,7 @@ name: Harvest live listings
 
 # Four light runs a day. Each run reads one publisher per city (the one tried longest ago), so eligible publishers
 # take turns across runs. Times are 07:23, 11:23, 15:23 and 19:23 US Eastern (EST).
+# When a run succeeds, the Data pipeline workflow rebuilds and publishes the site (its workflow_run trigger).
 on:
   schedule:
     - cron: "23 0,12,16,20 * * *"

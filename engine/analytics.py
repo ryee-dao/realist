@@ -534,7 +534,7 @@ def build_city(store, city, out_dir):
                 "median": now3["median"], "medianYoY": pct_change(now3["median"], was3["median"]) if min(now3["n"], was3["n"]) >= 30 else None,
                 "ppsf": now3["ppsf"], "ppsfYoY": pct_change(now3["ppsf"], was3["ppsf"]) if min(now3["n"], was3["n"]) >= 30 else None,
                 "sales12": now12["n"], "salesYoY": pct_change(now12["n"], was12["n"]),
-                "median12": now12["median"],
+                "median12": now12["median"], "ppsf12": now12["ppsf"],
             },
             "hist": {"edges": edges, "counts": hist},
         }

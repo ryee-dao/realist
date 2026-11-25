@@ -34,7 +34,7 @@ const Explore = lazy(PAGES.explore)
 // The page being opened starts downloading alongside the app and index.json, not after them.
 {
   const at = window.location.hash.replace(/^#\/?/, '').split('?')[0].split('/').filter(Boolean)
-  const first = at[0] === 'pipeline' || at[0] === 'about' ? at[0] : at[1] ?? 'find'
+  const first = at[0] === 'engine' || at[0] === 'pipeline' ? 'pipeline' : at[0] === 'about' ? at[0] : at[1] ?? 'find'
   preload(first === 'sales' ? 'sold' : first)
 }
 
@@ -64,8 +64,9 @@ function Item({ id, label, href, on }: { id: string; label: string; href: string
 const CITY_PAGES = ['find', 'areas', 'listings', 'compare', 'market', 'sold', 'drivers', 'explore']
 const ALIAS: Record<string, string> = { sales: 'sold' }
 const MAIN = [['find', 'Find areas'], ['listings', 'New listings']]
-const RESEARCH = [['areas', 'Neighborhoods'], ['compare', 'Crime'], ['market', 'Market'], ['sold', 'Sold prices'], ['drivers', 'Price drivers'], ['explore', 'Explore']]
-const LABEL: Record<string, string> = Object.fromEntries([...MAIN, ...RESEARCH, ['pipeline', 'Data Engine'], ['about', 'About']])
+const RESEARCH = [['areas', 'Neighborhoods'], ['compare', 'Crime'], ['explore', 'Explore']]
+const DATA = [['market', 'Market'], ['sold', 'Sold prices'], ['drivers', 'Price drivers']]
+const LABEL: Record<string, string> = Object.fromEntries([...MAIN, ...RESEARCH, ...DATA, ['pipeline', 'Data Engine'], ['about', 'About']])
 
 export default function App() {
   const route = useRoute()
@@ -84,7 +85,7 @@ export default function App() {
   const warnings = last?.checks.filter((c) => c.status === 'warn').length ?? 0
   const noun = city?.areaNoun.toLowerCase() ?? 'area'
   const title = { market: 'housing market', drivers: 'price drivers', areas: `by ${noun}`, sold: `sold prices by ${noun}`, explore: 'sales explorer', listings: 'new listings', compare: 'reported incidents', find: 'area finder' }[page] ?? ''
-  const href = (id: string) => (id === 'pipeline' || id === 'about' ? `#/${id}` : `#/${city?.id ?? ''}/${id}`)
+  const href = (id: string) => (id === 'pipeline' ? '#/engine' : id === 'about' ? '#/about' : `#/${city?.id ?? ''}/${id}`)
   const item = ([id, label]: string[]) => <Item key={id} id={id} label={label} href={href(id)} on={page === id} />
   const inMore = !MAIN.some(([id]) => id === page)
 
@@ -107,14 +108,16 @@ export default function App() {
         <div className="side-more" id="side-more">
           <div className="side-label">Research</div>
           <nav className="side-group" aria-label="Research">{RESEARCH.map(item)}</nav>
+          <div className="side-label">Data</div>
+          <nav className="side-group" aria-label="Data">{DATA.map(item)}</nav>
           <div className="side-label">Site</div>
           <nav className="side-group" aria-label="Site">{item(['pipeline', 'Data Engine'])}{item(['about', 'About'])}</nav>
           <div className="side-foot">
           {last && (
-            <a className="status" href="#/pipeline">
+            <a className="status" href="#/engine">
               <i className={`dot ${!last.ok ? 'bad' : warnings ? 'warn' : 'ok'}`} />
               <span>
-                Pipeline {!last.ok ? 'failed its checks' : warnings ? `passed, ${warnings} warning${warnings > 1 ? 's' : ''}` : 'healthy'}<br />
+                Data engine {!last.ok ? 'failed its checks' : warnings ? `passed, ${warnings} warning${warnings > 1 ? 's' : ''}` : 'healthy'}<br />
                 <span className="muted">Last run {timeAgo(last.finished)}</span>
               </span>
             </a>
@@ -153,7 +156,9 @@ export default function App() {
             </nav>
             <div className="page-head">
               <div>
-                <h1>{city.name} {title}</h1>
+                {/* New listings puts its result count beside the heading, outside the h1 so the count arriving later does
+                    not repaint the heading (the row takes the h1's type so the two sit on one line as before). */}
+                {page === 'listings' ? <div className="title-row"><h1>{city.name} {title}</h1></div> : <h1>{city.name} {title}</h1>}
                 {page !== 'listings' && <p className="muted">
                   {city.rows.toLocaleString('en-US')} recorded home sales since {city.firstSale.slice(0, 4)}. Statistics run through {monthLabel(city.through)}, the latest month with complete public records.
                 </p>}
@@ -174,7 +179,11 @@ export default function App() {
         </Suspense>
 
         <footer className="footer">
-          <span>Built from open public records. Figures are for research, not appraisal or financial advice.</span>
+          <span className="footer-note">
+            Built from open public records and public listings. Figures, estimates and photo findings are automated and can be wrong.
+            For research only: not an appraisal, inspection, or legal or financial advice. Confirm anything important with the original source or a professional.
+            Corrections or removals: <a href={`mailto:${site.email}`}>{site.email}</a>
+          </span>
           <span>Built by <a href={site.authorUrl} target="_blank" rel="noopener noreferrer">{site.author}</a></span>
         </footer>
       </main>

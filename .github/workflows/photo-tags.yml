@@ -1,6 +1,6 @@
 name: Photo tags
 
-# Tags Philadelphia listing photos with Claude Code (the owner's plan, via CLAUDE_CODE_OAUTH_TOKEN), every 5 hours, with no
+# Tags Philadelphia listing photos with Claude Code (the owner's plan, via CLAUDE_CODE_OAUTH_TOKEN), every 2 hours, with no
 # listing cap: a run stops at 75 minutes or when plan usage crosses the slow-down marks (60% 5-hour, 75% weekly).
 # engine/listing_analysis.py then tags only 5 listings a run and
 # stops cleanly at a usage limit; the next run resumes from the store. The analysis store, defect crops, usage
@@ -15,7 +15,9 @@ name: Photo tags
 # and one run at a time (concurrency below), so a single login file is used by one serialized job stream.
 on:
   schedule:
-    - cron: "41 0,5,10,15,20 * * *"     # 00:41, 05:41, 10:41, 15:41, 20:41 UTC; listings.yml runs at :23
+    - cron: "41 */2 * * *"     # twelve a day, at :41 past every even hour UTC, so new homes are tagged soon after a harvest
+                               # (listings.yml runs at :23). A run with nothing new ends in a few minutes; the usage marks above
+                               # still slow or stop it, and runs never overlap (concurrency below).
   workflow_dispatch:
     inputs:
       limit:

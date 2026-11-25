@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react'
 import L from 'leaflet'
+import { keepTipsInside } from '../lib/mapTip'
 import { City, Grid } from '../lib/data'
 import { cssVar, Theme } from '../lib/hooks'
 import { touchFriendly } from './MapView'
@@ -32,6 +33,7 @@ export default function SectionMap({ city, theme, grid, fillOf, tipOf, selected,
 
   useEffect(() => {
     const m = L.map(el.current!, { scrollWheelZoom: false, zoomSnap: 0.5 }).setView(city.center, city.zoom)
+    keepTipsInside(m)
     L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
       attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors', maxZoom: 17,
     }).addTo(m)

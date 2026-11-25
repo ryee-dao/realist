@@ -165,3 +165,5 @@
 .sm-hatch-bg { fill: color-mix(in srgb, var(--series-1) 22%, var(--surface)); }
 .sm-hatch-line { stroke: var(--series-1); stroke-width: 2; }
 .sm-split { stroke: var(--line-strong); stroke-width: 1; stroke-dasharray: 3 3; }
+/* the kept / thrown-out card beside the terminal: air between the bar and its list */
+.control-side .city-panel .reasons { margin-top: 12px; }

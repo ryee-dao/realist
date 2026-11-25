@@ -1,4 +1,5 @@
 import '../styles/pipeline.css'
+import '../styles/pipeline-fx.css'
 import { useEffect, useId, useState } from 'react'
 import { Check, City, Index, Run, Status } from '../lib/data'
 import { compact, dateLabel, dateTime, monthLabel, num, timeAgo } from '../lib/format'
@@ -42,7 +43,7 @@ function useCityParam(index: Index): [string, (id: string) => void] {
 export default function Pipeline({ index, status }: { index: Index; status: Status }) {
   const run = status.last
   const [cityId, setCityId] = useCityParam(index)
-  if (!run) return <div className="notice">The pipeline has not completed a run yet.</div>
+  if (!run) return <div className="notice">The data engine has not completed a run yet.</div>
 
   const city = index.cities.find((c) => c.id === cityId) ?? null
   const checks = city ? run.checks.filter((c) => c.city === city.id) : run.checks
@@ -50,7 +51,7 @@ export default function Pipeline({ index, status }: { index: Index; status: Stat
   const failed = checks.filter((c) => c.status === 'fail').length
 
   return (
-    <div className="pipe">
+    <div className="pipe fx-d">
       <div className="page-head">
         <div>
           <h1>Data Engine</h1>
@@ -125,16 +126,40 @@ function ControlSide({ index, run, city }: { index: Index; run: Run; city: City 
           <div className="lights-key"><span><i className="light src-pulled" />pulled</span><span><i className="light src-unchanged" />unchanged</span><span><i className="light src-failed" />failed</span></div>
         </div>
       </section>
+      {city && <ThrownOut city={city} run={run} />}
     </div>
+  )
+}
+
+/* City view, beside the terminal: what the last run kept, and what it threw out and why. */
+function ThrownOut({ city, run }: { city: City; run: Run }) {
+  const s = cityStages(run, city.id)
+  return (
+    <section className="card city-panel">
+      <header className="card-head"><div><h3>Kept and thrown out</h3><p>{num(s.read)} sale records read</p></div></header>
+      {s.read > 0 ? <>
+        <SegBar kept={s.kept} ranked={s.ranked} />
+        <ul className="reasons">
+          <li className="kept"><i className="key-box kept" /><span>Kept</span><b>{num(s.kept)}</b><em>{pct(s.kept, s.read)}</em></li>
+          {s.ranked.map(([reason, n], i) => (
+            <li key={reason} title={reason}><i className={`key-box rej r${Math.min(i, 3)}`} /><span>{short(reason)}</span><b>{num(n)}</b><em>{pct(n, s.read)}</em></li>
+          ))}
+        </ul>
+      </> : <div className="muted">No sale records read.</div>}
+    </section>
   )
 }
 
 function Ring({ share, size }: { share: number; size?: 'big' }) {
   const R = 42, C = 2 * Math.PI * R
+  const grad = `ring-g-${useId().replace(/:/g, '')}`   // gradient for styles/pipeline-fx.css
   return (
-    <svg className={`ring ${size ?? ''}`} viewBox="0 0 100 100" role="img" aria-label={`${Math.round(share * 100)}% of records kept`}>
+    <svg className={`ring ${size ?? ''}`} viewBox="0 0 100 100" role="img" aria-label={`${Math.round(share * 100)}% of records kept`}
+      style={{ '--fx-grad': `url(#${grad})` } as React.CSSProperties}>
+      <defs><linearGradient id={grad} x1="0" y1="0" x2="1" y2="1"><stop offset="0" className="fx-g0" /><stop offset="1" className="fx-g1" /></linearGradient></defs>
       <circle cx="50" cy="50" r={R} className="ring-track" />
-      <circle cx="50" cy="50" r={R} className="ring-fill" strokeDasharray={`${C * share} ${C}`} transform="rotate(-90 50 50)" />
+      <circle cx="50" cy="50" r={R} className="ring-fill" strokeDasharray={`${C * share} ${C}`} transform="rotate(-90 50 50)"
+        style={{ '--fx-dash': C * share } as React.CSSProperties} />
       <text x="50" y="50" textAnchor="middle" className="ring-num">{Math.round(share * 100)}%</text>
       <text x="50" y="66" textAnchor="middle" className="ring-cap">kept</text>
     </svg>
@@ -174,7 +199,7 @@ function CityPanel({ city, run }: { city: City; run: Run }) {
   const ok = s.passed === s.checks.length
   return (
     <section className="card city-panel">
-      <header className="card-head"><div><h3>{city.name} · kept and thrown out</h3><p>{dateTime(run.finished)} · {ok ? `${s.passed}/${s.checks.length} checks passed` : `${s.passed}/${s.checks.length} checks passed, needs a look`}</p></div><Freshness asOf={s.asOf} /></header>
+      <header className="card-head"><div><h3>{city.name} · last run</h3><p>{dateTime(run.finished)} · {ok ? `${s.passed}/${s.checks.length} checks passed` : `${s.passed}/${s.checks.length} checks passed, needs a look`}</p></div><Freshness asOf={s.asOf} /></header>
       <div className="city-panel-grid">
         <div className="city-panel-left">
           <div className="ring-row">
@@ -188,19 +213,10 @@ function CityPanel({ city, run }: { city: City; run: Run }) {
               <div><dt>Checks</dt><dd className="pipe-lights">{s.checks.map((k) => <i key={k.name} className={`light ${k.status}`} title={`${k.name}: ${k.detail}`} />)}</dd></div>
             </dl>
           </div>
-          <div className="tile-label">Coverage · last 12 months</div>
-          <Meters city={city} />
         </div>
         <div className="city-panel-right">
-          {s.read > 0 ? <>
-            <SegBar kept={s.kept} ranked={s.ranked} />
-            <ul className="reasons">
-              <li className="kept"><i className="key-box kept" /><span>Kept</span><b>{num(s.kept)}</b><em>{pct(s.kept, s.read)}</em></li>
-              {s.ranked.map(([reason, n], i) => (
-                <li key={reason} title={reason}><i className={`key-box rej r${Math.min(i, 3)}`} /><span>{short(reason)}</span><b>{num(n)}</b><em>{pct(n, s.read)}</em></li>
-              ))}
-            </ul>
-          </> : <div className="muted">No sale records read.</div>}
+          <div className="tile-label">Coverage · last 12 months</div>
+          <Meters city={city} />
         </div>
       </div>
     </section>
@@ -266,7 +282,7 @@ function SourcesTable({ rows }: { rows: { city?: string; s: Run['cities'][string
             return (
               <tr key={(city ?? '') + s.name}>
                 {city !== undefined && <td>{city}</td>}
-                <td><b>{s.name}</b><small><code>{s.dataset}</code>{s.context && ' · context'}</small></td>
+                <td><b>{s.name}</b><small><code>{s.dataset}</code></small></td>
                 <td className={`num ${last ? 'muted' : ''}`} title={was}>{num(last ? last.fetched : s.fetched)}</td><td className={`num ${last ? 'muted' : ''}`} title={was}>{num(last ? last.kept : s.kept)}</td><td className="num">{s.context ? '–' : num(s.new)}</td><td className="num">{num(s.requests)}</td>
                 <td><span className={`chip ${st === 'pulled' ? 'pass' : st === 'failed' ? 'warn' : ''}`} title={s.skipped ?? undefined}>{st === 'pulled' ? '✓ Pulled' : st === 'failed' ? '! Failed' : last ? `Unchanged · pull of ${day(last.date)}` : 'Unchanged'}</span></td>
               </tr>
@@ -352,7 +368,9 @@ const shortMonth = (m: string) => `${monthLabel(m).slice(0, 3)} ${m.slice(2, 4)}
 function SaleMonths({ city, top: max, title, height }: { city: City; top: number; title?: string; height: number }) {
   const [ref, width] = useWidth<HTMLDivElement>()
   const [hover, setHover] = useState<number | null>(null)
-  const hatch = `hatch-${useId().replace(/:/g, '')}`
+  const uid = useId().replace(/:/g, '')
+  const hatch = `hatch-${uid}`
+  const grad = `smg-${uid}`   // gradient for styles/pipeline-fx.css
   const data = city.byMonth
   const n = data.length
   const w = Math.max(10, width - SM.left - SM.right)
@@ -379,8 +397,9 @@ function SaleMonths({ city, top: max, title, height }: { city: City; top: number
       <div className="chart sm-chart" ref={ref} style={{ minHeight: height }}>
         {width > 0 && (
           <svg width={width} height={height} role="img" aria-label={`${city.name}: sales per sale month; complete through ${monthLabel(city.through)}`}
-            onPointerMove={onMove} onPointerLeave={() => setHover(null)}>
+            onPointerMove={onMove} onPointerLeave={() => setHover(null)} style={{ '--fx-grad': `url(#${grad})` } as React.CSSProperties}>
             <defs>
+              <linearGradient id={grad} x1="0" y1="1" x2="0" y2="0"><stop offset="0" className="fx-g0" /><stop offset="1" className="fx-g1" /></linearGradient>
               <pattern id={hatch} width="5" height="5" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
                 <rect width="5" height="5" className="sm-hatch-bg" /><line x1="0" y1="0" x2="0" y2="5" className="sm-hatch-line" />
               </pattern>
@@ -400,7 +419,7 @@ function SaleMonths({ city, top: max, title, height }: { city: City; top: number
               const yTop = SM.top + h - bh
               const fill = b.month > city.through
               return (
-                <path key={b.month} className={fill ? 'sm-bar filling' : 'sm-bar'} style={fill ? { fill: `url(#${hatch})` } : undefined}
+                <path key={b.month} className={fill ? 'sm-bar filling' : 'sm-bar'} style={{ '--i': i, ...(fill ? { fill: `url(#${hatch})` } : {}) } as React.CSSProperties}
                   opacity={hover == null || hover === i ? 1 : 0.55}
                   d={`M${x0},${SM.top + h}V${yTop + r}Q${x0},${yTop} ${x0 + r},${yTop}H${x0 + bar - r}Q${x0 + bar},${yTop} ${x0 + bar},${yTop + r}V${SM.top + h}Z`} />
               )

@@ -36,7 +36,7 @@ button.a-row:focus-visible { outline: 2px solid var(--brand); outline-offset: -2
   .a-map-card .card-head .segmented > * { padding: 5px 9px; font-size: 12.5px; }
   .a-row { grid-template-columns: minmax(0, 7.4rem) 5.6rem minmax(36px, 1fr); gap: 8px; }
   .a-label { font-size: 12.5px; }
-  .a-val { font-size: 12.5px; }
+  .a-val { font-size: 12.5px; white-space: normal; line-height: 1.3; }   /* "no clear change" wraps instead of running under the bar */
 }
 .a-table-card table.data th { white-space: normal; vertical-align: bottom; line-height: 1.3; }
 .a-table-card table.data th .sort { white-space: normal; text-align: inherit; }
@@ -54,3 +54,36 @@ button.a-row:focus-visible { outline: 2px solid var(--brand); outline-offset: -2
 }
 /* phones: a shorter map so the detail is a short scroll away (the page scrolls past it with one finger) */
 @media (max-width: 560px) { .a-map-card .map { height: 360px !important; } }
+
+/* a value on two lines (net over gross), the second one quieter */
+.a-two { display: grid; line-height: 1.3; }
+.a-faint { color: var(--muted); font-weight: 500; }
+/* short figures over a bar when the pointer is on it; the area's figure is tinted by how it stands against the city */
+.a-tip {
+  display: none; position: absolute; right: 0; bottom: calc(100% + 7px); z-index: 5; padding: 4px 8px; border-radius: 6px;
+  background: var(--surface-2); border: 1px solid var(--line-strong); color: var(--text-2); font: 500 11.5px var(--mono); white-space: nowrap;
+  pointer-events: none; box-shadow: 0 4px 14px rgb(0 0 0 / .28);
+}
+.a-bar:hover > .a-tip { display: block; }
+.a-tip b { font-weight: 600; color: var(--text); }
+.a-bar.plain .a-bar-fill { background: color-mix(in srgb, var(--chg-1) 60%, var(--surface-2)); }
+.a-bar.sp1 .a-bar-fill { background: color-mix(in srgb, var(--brand) 50%, var(--text-2)); }
+.a-bar.sp2 .a-bar-fill { background: var(--brand); }
+.a-bar.sn1 .a-bar-fill { background: color-mix(in srgb, var(--chg-5) 50%, var(--text-2)); }
+.a-bar.sn2 .a-bar-fill { background: var(--chg-5); }
+.a-tip b.sp1 { color: color-mix(in srgb, var(--brand) 55%, var(--text)); }
+.a-tip b.sp2 { color: var(--brand); }
+.a-tip b.sn1 { color: color-mix(in srgb, var(--chg-5) 55%, var(--text)); }
+.a-tip b.sn2 { color: var(--chg-5); }
+.a-bar::before { content: ""; position: absolute; inset: -6px 0; }   /* easier to land on than an 8px strip */
+/* two bars in one row (net over gross), lined up with the two lines of the value */
+.a-bars { display: grid; gap: 9px; justify-self: end; width: 100%; max-width: 160px; }
+.a-bar.quiet { opacity: .5; }
+.a-bar.quiet:hover { opacity: 1; }
+.a-group { padding: 12px 4px 5px; font-size: 11px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; color: var(--muted); border-bottom: 1px solid var(--line); }
+.a-rows > .a-group:first-child { padding-top: 8px; }
+/* the narrowest phones: room for the longest label ("Property / 1,000" and its grade) before the value */
+@media (max-width: 359px) {
+  .a-row { grid-template-columns: minmax(0, 8.2rem) 5rem minmax(20px, 1fr); gap: 6px; }
+  .a-label, .a-val { font-size: 12px; }
+}

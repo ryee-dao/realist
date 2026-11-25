@@ -1,6 +1,7 @@
 import '../styles/finder.css'
 import '../styles/areas.css'
-import { ReactNode, useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, ReactNode, startTransition, useEffect, useMemo, useRef, useState } from 'react'
+import { MiniBar, Tip } from '../components/MiniBar'
 import { Area, Areas, City, Listings, useData } from '../lib/data'
 import { Theme, cssVar } from '../lib/hooks'
 import { monthLabel, num, pct, usd, usdCompact } from '../lib/format'
@@ -76,6 +77,14 @@ export default function AreasPage({ city, theme }: { city: City; theme: Theme })
   }, [])
   const [sort, setSort] = useState<{ key: SortKey; dir: 1 | -1 }>({ key: 'sales12', dir: -1 })
   const [query, setQuery] = useState('')
+  // The map is made before areas.json arrives (its tiles are what a visitor waits for); the circles follow the data.
+  // The table sits below the map: it is drawn just after the map and detail are on screen, in an interruptible render.
+  const [tableOn, setTableOn] = useState(false)
+  useEffect(() => {
+    if (!data) return
+    const t = setTimeout(() => startTransition(() => setTableOn(true)), 0)
+    return () => clearTimeout(t)
+  }, [data])
 
   const areas = data?.areas ?? []
   const M = METRICS.find((m) => m.id === metric)!
@@ -109,7 +118,7 @@ export default function AreasPage({ city, theme }: { city: City; theme: Theme })
       out.push({
         id: a.key, lat: a.lat, lon: a.lon, radius: 5 + Math.sqrt(a.sales12 / maxSales) * 13,
         color: cssVar(`--${M.ramp}-${classOf(v, bounds) + 1}`),
-        tip: `${a.name}${a.group ? ` (${a.group})` : ''}: ${M.title.toLowerCase()} ${M.fmt(v)} · median ${usd(a.median12)}, ${num(a.sales12)} sold`,
+        tip: `${a.name}${a.group ? ` (${a.group})` : ''}: ${M.id === 'price' ? '' : `${M.label.toLowerCase()} ${M.fmt(v)} · `}${usd(a.median12)} median, ${num(a.sales12)} sold`,
       })
     }
     return out.sort((a, b) => b.radius - a.radius)
@@ -130,12 +139,11 @@ export default function AreasPage({ city, theme }: { city: City; theme: Theme })
   const linked = picked == null ? null : areas.find((a) => a.key === picked) ?? areas.find((a) => a.name.toLowerCase() === picked.toLowerCase()) ?? null
   // opened from a link on a narrow screen: the detail sits below the map, so bring it into view once
   useEffect(() => {
-    if (!linked || !fromLink.current) return
+    if (!linked || !fromLink.current || !tableOn) return   // once the table is in, so the page is its full length
     fromLink.current = false
     if (window.innerWidth < 900) document.querySelector('.a-detail')?.scrollIntoView({ block: 'start' })
-  }, [linked])
+  }, [linked, tableOn])
 
-  if (!data) return <div className="loading">Loading areas…</div>
   const sel = linked ?? areas[0] ?? null   // open on the busiest area
   const onSort = (key: SortKey) => setSort((s) => ({ key, dir: s.key === key ? (s.dir === 1 ? -1 : 1) : key === 'name' ? 1 : -1 }))
   const noun = city.areaNoun.toLowerCase()
@@ -151,18 +159,18 @@ export default function AreasPage({ city, theme }: { city: City; theme: Theme })
             <Segmented label="Map colour" value={metric} onChange={setMetric} options={METRICS.map((m) => ({ id: m.id, label: m.label }))} />
           </header>
           <MapView center={city.center} zoom={city.zoom} points={points} theme={theme} selected={sel?.key ?? null} onSelect={(id) => { setPicked(String(id)); revealOnPhone(document.querySelector('.a-detail')) }} />
-          <div className="map-legend">
+          {data && <div className="map-legend">
             {LEGEND_ENDS[metric] && <span className="muted">{LEGEND_ENDS[metric]![0]}</span>}
             {[0, 1, 2, 3, 4].map((i) => (
               <span key={i}><i className="key-box" style={{ background: `var(--${M.ramp}-${i + 1})` }} />
                 {metric === 'change' ? CHANGE_LABELS[i] : `${i === 0 ? 'up to' : M.fmt(bounds[i - 1]) + ' –'} ${M.fmt(bounds[i])}`}</span>
             ))}
             {LEGEND_ENDS[metric] && <span className="muted">{LEGEND_ENDS[metric]![1]}</span>}
-          </div>
+          </div>}
         </section>
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: 14, minWidth: 0 }}>
-          {sel ? <AreaDetail area={sel} data={data} city={city} ramp={ramp} standing={standing.get(sel.key)} onClose={() => setPicked(null)} /> : (
+          {!data ? <div className="loading">Loading areas…</div> : sel ? <AreaDetail area={sel} data={data} city={city} ramp={ramp} standing={standing.get(sel.key)} onClose={() => setPicked(null)} /> : (
             <section className="card">
               <header className="card-head"><div><h3>Pick an area</h3><p>Select a circle on the map or a row in the table to see its price trend, sales volume and how it compares with the city.</p></div></header>
               <dl className="kv">
@@ -176,7 +184,7 @@ export default function AreasPage({ city, theme }: { city: City; theme: Theme })
         </div>
       </div>
 
-      <section className="card a-table-card">
+      {data && <section className="card a-table-card">
         <header className="card-head">
           <div><h3>All areas</h3><p>Last 12 months. Areas with fewer than 12 sales are left out. Incidents are police-reported, per 1,000 residents. Tier blends growth, yield, sales and incidents evenly; <a href={`#/${city.id}/find`}>Find areas</a> lets you weight them.</p></div>
           <label className="field"><span>Find an area</span><input id="area-search" type="search" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Name or ZIP" /></label>
@@ -200,7 +208,7 @@ export default function AreasPage({ city, theme }: { city: City; theme: Theme })
               <th>Trend</th>
             </tr></thead>
             <tbody>
-              {rows.map((a) => (
+              {tableOn && rows.map((a) => (
                 <tr key={a.key} className={`click ${a.key === sel?.key ? 'sel' : ''}`} onClick={() => { setPicked(a.key); revealOnPhone(document.querySelector('.a-detail')) }}>
                   <td><b>{a.name}</b>{a.group && <span className="muted"> {a.group}</span>}{(a.zips ?? []).length > 0 && <span className="muted a-zip">{(a.zips ?? []).join(', ')}</span>}</td>
                   <td className="a-tier-col"><TierMark ramp={ramp} tier={standing.get(a.key)?.tier ?? null} /></td>
@@ -216,14 +224,14 @@ export default function AreasPage({ city, theme }: { city: City; theme: Theme })
                   <td><Sparkline values={a.quarterly} /></td>
                 </tr>
               ))}
-              {rows.length === 0 && <tr><td colSpan={12} className="muted">No area matches “{query}”.</td></tr>}
+              {tableOn && rows.length === 0 && <tr><td colSpan={12} className="muted">No area matches “{query}”.</td></tr>}
             </tbody>
           </table>
         </div>
         <p className="a-legend">
           <GradeMark ramp={ramp} p={90} label="" /> A = top fifth of {city.name} areas on that measure, <GradeMark ramp={ramp} p={0} label="" /> E = bottom fifth. Fewer reported incidents grade higher.
         </p>
-      </section>
+      </section>}
     </>
   )
 }
@@ -239,6 +247,24 @@ function cityGrowthFor(a: Area, cg: CityGrowth | undefined, years: 1 | 5): numbe
   if (!cg) return null
   const [first, second] = a.growthMethod === 'repeat' ? ['repeat', 'median'] : ['median', 'repeat']
   return cg[`${first}${years}` as keyof CityGrowth] ?? cg[`${second}${years}` as keyof CityGrowth] ?? null
+}
+
+/** Which of the two city growth figures an area is shown against, in words for the hover label. */
+function cityGrowthLabel(a: Area, cg: CityGrowth | undefined, years: 1 | 5): string {
+  if (!cg) return ''
+  const own = a.growthMethod === 'repeat' ? 'repeat' : 'median'
+  const used = cg[`${own}${years}` as keyof CityGrowth] != null ? own : own === 'repeat' ? 'median' : 'repeat'
+  return used === 'repeat' ? ' (resold homes)' : ' (median price)'
+}
+
+/** Why the city growth figure differs between neighbourhoods: shown when a growth row is opened. */
+function growthWhy(a: Area, cg: CityGrowth | undefined, years: 1 | 5, digits: number): string {
+  const repeat = a.growthMethod === 'repeat'
+  const other = cg?.[`${repeat ? 'median' : 'repeat'}${years}` as keyof CityGrowth]
+  const mine = repeat ? 'Measured from homes here that sold twice, so a change in which homes sell does not skew it.'
+    : 'Too few homes here sold twice, so this is the change in the median sale price.'
+  return `${mine}\nThe city figure is measured the same way, to compare like with like.` +
+    (other == null ? '' : ` By ${repeat ? 'median price' : 'resold homes'} the city is ${pct(other, digits)}, which is why other neighborhoods can show a different city number.`)
 }
 
 /** Year-on-year change in all reported incidents, in plain words. */
@@ -265,25 +291,16 @@ function TierMark({ tier, ramp }: { tier: Tier | null; ramp: Ramp }) {
   return <span className="f-tier" style={tierStyle(tier, ramp)} title={TIER_TIP}>{tier}</span>
 }
 
-/** A thin bullet bar: the area's value as a bar (from zero, or from the middle for changes) and a tick at the city figure. */
-function MiniBar({ v, c, lo, hi, tone }: { v: number | null; c: number | null; lo: number; hi: number; tone?: 'good' | 'bad' }) {
-  if (v == null) return <span className="a-bar" />
-  const pos = (x: number) => Math.max(0, Math.min(1, (x - lo) / (hi - lo || 1))) * 100
-  const base = lo < 0 ? pos(0) : 0
-  const p = pos(v)
-  return (
-    <span className={`a-bar ${tone ?? ''}`} aria-hidden="true">
-      {lo < 0 && <i className="a-bar-zero" style={{ left: `${base}%` }} />}
-      <i className="a-bar-fill" style={{ left: `${Math.min(base, p)}%`, width: `${Math.max(Math.abs(p - base), 2)}%` }} />
-      {c != null && <i className="a-bar-city" style={{ left: `${pos(c)}%` }} />}
-    </span>
-  )
-}
+/** Rows that are plain figures; the rest are graded or coloured against the city and sit in their own group below. */
+const PLAIN_ROWS = ['price', 'ppsf', 'rent', 'sold']
 
 interface DetailRow {
   id: string; label: string; grade?: Graded; value: ReactNode
   more?: string                                                    // exact figures, shown on hover and on tap
   bar?: { v: number | null; c: number | null; lo: number; hi: number; tone?: 'good' | 'bad' }
+  tip?: [string, string | null]                                    // [this area, city], shown when the bar is hovered
+  better?: 'up' | 'down'                                           // which way is better, where the site grades it; colours the hover figure
+  bar2?: DetailRow['bar']; tip2?: [string, string | null]          // a second, quieter bar under the first
 }
 
 /** Scale ends for each bar, from the spread across the city's areas, so one area's bars read the same way as another's. */
@@ -294,7 +311,7 @@ function useDomains(areas: Area[]) {
       return v.length ? v[Math.floor(0.95 * (v.length - 1))] : 1
     }
     return {
-      price: q95((a) => a.median12), g1: q95(growth1, true), g5: q95(growth5, true), rent: q95((a) => a.rent), yield: q95((a) => a.yield),
+      price: q95((a) => a.median12), g1: q95(growth1, true), g5: q95(growth5, true), rent: q95((a) => a.rent), yield: q95((a) => a.yield), ppsf: q95((a) => a.ppsf12),
       violent: q95((a) => a.violentRate), property: q95((a) => a.propertyRate), crime: Math.max(20, q95((a) => a.crimeYoY, true)),
     }
   }, [areas])
@@ -318,31 +335,59 @@ function AreaDetail({ area, data, city, ramp, standing, onClose }: { area: Area;
   const gap = area.median12 != null && city.kpi.median12 ? (area.median12 / city.kpi.median12 - 1) * 100 : null
   const crimeV = area.crimeTrend === 'flat' ? 0 : area.crimeYoY
   const crimeC = cx.crimeTrend === 'flat' ? 0 : cx.crimeYoY
+  const cityPpsf = city.kpi.ppsf12 ?? city.kpi.ppsf
+  const netShare = area.yield && area.netYield != null ? area.netYield / area.yield : null   // the engine's flat costs share
+  const cxYield = cx.yield == null ? null : `${cx.yield.toFixed(1)}%`
+  const tipOf = (t: [string, string | null] | undefined, better?: 'up' | 'down'): Tip | undefined => t && { area: t[0], city: t[1], better }
   const rows: DetailRow[] = [
-    { id: 'price', label: 'Median price', value: usd(area.median12), bar: level(area.median12, city.kpi.median12, dom.price),
+    { id: 'price', label: 'Median price', value: usd(area.median12), tip: [usdCompact(area.median12), usdCompact(city.kpi.median12)], bar: level(area.median12, city.kpi.median12, dom.price),
       more: `${usd(area.median12)}${vs(usd(city.kpi.median12))}${gap == null ? '' : Math.abs(gap) < 0.5 ? ' (about the same)' : ` (${Math.abs(gap).toFixed(0)}% ${gap > 0 ? 'above' : 'below'})`}` +
         (area.medianLow != null && area.medianHigh != null ? `. Likely range ${usdCompact(area.medianLow)}–${usdCompact(area.medianHigh)}.` : '') },
-    { id: 'g1', label: 'Growth, 1 yr', grade: 'medianYoY', value: g1 == null ? 'too few sales' : pct(g1), bar: change(g1, c1, dom.g1, true),
-      more: g1 == null ? undefined : `${pct(g1)}${vs(c1 == null ? null : pct(c1))}. ${growthTip(area) ?? ''}` },
-    { id: 'g5', label: 'Growth, 5 yrs', grade: 'change5y', value: g5 == null ? 'too few sales' : pct(g5, 0), bar: change(g5, c5, dom.g5, true),
-      more: g5 == null ? undefined : `${pct(g5, 0)}${vs(c5 == null ? null : pct(c5, 0))}` },
-    { id: 'ppsf', label: 'Price / sq ft', value: area.ppsf12 == null ? 'not published' : usd(area.ppsf12) },
+    { id: 'g1', label: 'Growth, 1 yr', grade: 'medianYoY', value: g1 == null ? 'too few sales' : pct(g1), tip: [pct(g1), c1 == null ? null : pct(c1) + cityGrowthLabel(area, data.cityGrowth, 1)], better: 'up', bar: change(g1, c1, dom.g1, true),
+      more: g1 == null ? undefined : `${pct(g1)}${vs(c1 == null ? null : pct(c1))}\n${growthWhy(area, data.cityGrowth, 1, 1)}` },
+    { id: 'g5', label: 'Growth, 5 yrs', grade: 'change5y', value: g5 == null ? 'too few sales' : pct(g5, 0), tip: [pct(g5, 0), c5 == null ? null : pct(c5, 0) + cityGrowthLabel(area, data.cityGrowth, 5)], better: 'up', bar: change(g5, c5, dom.g5, true),
+      more: g5 == null ? undefined : `${pct(g5, 0)}${vs(c5 == null ? null : pct(c5, 0))}\n${growthWhy(area, data.cityGrowth, 5, 0)}` },
+    { id: 'ppsf', label: 'Price / sq ft', value: area.ppsf12 == null ? 'not published' : usd(area.ppsf12), tip: [usd(area.ppsf12), cityPpsf == null ? null : usd(cityPpsf)],
+      bar: area.ppsf12 == null ? undefined : level(area.ppsf12, cityPpsf, dom.ppsf) },
     { id: 'sold', label: 'Homes sold', grade: 'sales12', value: num(area.sales12),
       more: `${num(area.sales12)} in 12 months${area.salesYoY != null ? `, ${pct(area.salesYoY, 0)} on the year before` : ''}` },
-    { id: 'rent', label: 'Rent', value: rentValue(area), bar: area.rent == null ? undefined : level(area.rent, cx.rent, dom.rent),
+    { id: 'rent', label: 'Rent', value: rentValue(area), tip: [usd(area.rent), cx.rent == null ? null : usd(cx.rent)], bar: area.rent == null ? undefined : level(area.rent, cx.rent, dom.rent),
       more: area.rent == null ? undefined : rentLines(area, cx).join('\n') },
-    { id: 'yield', label: 'Rent yield', grade: 'yield', value: area.yield == null ? '–' : `${area.yield.toFixed(1)}%`, bar: area.yield == null ? undefined : level(area.yield, cx.yield, dom.yield),
+    { id: 'yield', label: 'Rent yield', grade: 'yield', value: area.yield == null ? '–' : area.netYield == null ? `${area.yield.toFixed(1)}%`
+        : <span className="a-two"><span>{area.netYield.toFixed(1)}% net</span><span className="a-faint">{area.yield.toFixed(1)}% gross</span></span>,
+      better: 'up', ...(area.yield == null ? {} : area.netYield == null || netShare == null
+        ? { tip: [`${area.yield.toFixed(1)}%`, cxYield] as [string, string | null], bar: level(area.yield, cx.yield, dom.yield) }
+        : { tip: [`${area.netYield.toFixed(1)}% net`, cx.yield == null ? null : `${(cx.yield * netShare).toFixed(1)}%`] as [string, string | null],
+            bar: level(area.netYield, cx.yield == null ? null : cx.yield * netShare, dom.yield * netShare),
+            tip2: [`${area.yield.toFixed(1)}% gross`, cxYield] as [string, string | null], bar2: level(area.yield, cx.yield, dom.yield) }),
       more: area.yield == null ? undefined : `${area.yield.toFixed(1)}% before costs${area.netYield != null ? `, about ${area.netYield.toFixed(1)}% after typical costs` : ''}${vs(cx.yield == null ? null : `${cx.yield.toFixed(1)}%`)}.${yieldRange(area) ? `\nRange ${yieldRange(area)}.` : ''}\n${YIELD_NOTE}` },
   ]
   if (area.violentRate == null) rows.push({ id: 'inc', label: 'Incidents', value: 'too few residents' })
   else rows.push(
-    { id: 'violent', label: 'Violent', grade: 'violentRate', value: area.violentRate.toFixed(1), bar: level(area.violentRate, cx.violentRate, dom.violent),
+    { id: 'violent', label: 'Violent / 1,000', grade: 'violentRate', value: area.violentRate.toFixed(1), tip: [area.violentRate.toFixed(1), cx.violentRate?.toFixed(1) ?? null], better: 'down', bar: level(area.violentRate, cx.violentRate, dom.violent),
       more: `${area.violentRate.toFixed(1)} per 1,000${vs(cx.violentRate?.toFixed(1) ?? null)}${area.violentRaw != null ? `. Unadjusted ${area.violentRaw.toFixed(1)}.` : ''}` },
-    { id: 'property', label: 'Property', grade: 'propertyRate', value: area.propertyRate?.toFixed(1) ?? '–', bar: level(area.propertyRate, cx.propertyRate, dom.property),
+    { id: 'property', label: 'Property / 1,000', grade: 'propertyRate', value: area.propertyRate?.toFixed(1) ?? '–', tip: [area.propertyRate?.toFixed(1) ?? '–', cx.propertyRate?.toFixed(1) ?? null], better: 'down', bar: level(area.propertyRate, cx.propertyRate, dom.property),
       more: `${area.propertyRate?.toFixed(1)} per 1,000${vs(cx.propertyRate?.toFixed(1) ?? null)}${area.propertyRaw != null ? `. Unadjusted ${area.propertyRaw.toFixed(1)}.` : ''}` },
-    { id: 'crime', label: 'Incidents, 1 yr', value: trendWord(area), bar: change(crimeV, crimeC, dom.crime, false),
+    { id: 'crime', label: 'Incidents, 1 yr', value: trendWord(area), tip: [trendWord(area), cx.crimeYoY != null || cx.crimeTrend === 'flat' ? trendWord(cx) : null], better: 'down', bar: change(crimeV, crimeC, dom.crime, false),
       more: `${trendWord(area)}${vs(cx.crimeYoY != null || cx.crimeTrend === 'flat' ? trendWord(cx) : null)}` },
   )
+
+  const renderRow = (r: DetailRow) => {
+    const inner = <>
+      <span className="a-label">{r.label}{r.grade && <GradeMark ramp={ramp} p={standing?.pctl[r.grade]} label={GRADED.find((g) => g.id === r.grade)!.label} />}</span>
+      <span className="a-val">{r.value}</span>
+      {!r.bar ? <span className="a-bar none" /> : !r.bar2 ? <MiniBar {...r.bar} tip={tipOf(r.tip, r.better)} />
+        : <span className="a-bars"><MiniBar {...r.bar} tip={tipOf(r.tip, r.better)} /><MiniBar {...r.bar2} tip={tipOf(r.tip2, r.better)} quiet /></span>}
+    </>
+    if (!r.more) return <div key={r.id} className="a-row">{inner}</div>
+    const on = open === r.id
+    return (
+      <div key={r.id} className="a-row-wrap">
+        <button className={`a-row ${on ? 'on' : ''}`} title={r.more} aria-expanded={on} onClick={() => setOpen(on ? null : r.id)}>{inner}</button>
+        {on && <p className="a-more">{r.more}</p>}
+      </div>
+    )
+  }
 
   return (
     <section className="card a-detail">
@@ -352,23 +397,12 @@ function AreaDetail({ area, data, city, ramp, standing, onClose }: { area: Area;
         <div className="a-tier-head"><TierMark tier={standing?.tier ?? null} ramp={ramp} /><button className="ghost small" onClick={onClose}>Close</button></div>
       </header>
       <div className="a-rows">
-        {rows.map((r) => {
-          const inner = <>
-            <span className="a-label">{r.label}{r.grade && <GradeMark ramp={ramp} p={standing?.pctl[r.grade]} label={GRADED.find((g) => g.id === r.grade)!.label} />}</span>
-            <span className="a-val">{r.value}</span>
-            {r.bar ? <MiniBar {...r.bar} /> : <span className="a-bar none" />}
-          </>
-          if (!r.more) return <div key={r.id} className="a-row">{inner}</div>
-          const on = open === r.id
-          return (
-            <div key={r.id} className="a-row-wrap">
-              <button className={`a-row ${on ? 'on' : ''}`} title={r.more} aria-expanded={on} onClick={() => setOpen(on ? null : r.id)}>{inner}</button>
-              {on && <p className="a-more">{r.more}</p>}
-            </div>
-          )
+        {[...rows.filter((r) => PLAIN_ROWS.includes(r.id)), ...rows.filter((r) => !PLAIN_ROWS.includes(r.id))].map((r, i) => {
+          const head = i === 0 ? 'Prices and sales' : i === PLAIN_ROWS.length ? 'Compared with the city' : null
+          const row = renderRow(r)
+          return head ? <Fragment key={r.id}><div className="a-group">{head}</div>{row}</Fragment> : row
         })}
       </div>
-      <p className="a-kv-note">Incidents per 1,000 residents. Bar: this area; line: city. Tap a row for figures.</p>
       {area.listings && <ListingLine l={area.listings} />}
       <LineChart labels={data.quarters} series={[{ name: 'Median sale price', color: 'var(--series-1)', values: area.quarterly }]}
         ticks={() => data.quarters.map((q, index) => ({ index, label: q.slice(0, 4), first: q.endsWith('Q1') })).filter((t) => t.first)}

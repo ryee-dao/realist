@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 
 export interface Kpi {
-  median: number | null; medianYoY: number | null; ppsf: number | null; ppsfYoY: number | null
+  median: number | null; medianYoY: number | null; ppsf: number | null; ppsf12?: number | null; ppsfYoY: number | null
   sales12: number; salesYoY: number | null; median12: number | null
 }
 export interface Source { name: string; publisher: string; url: string }
@@ -107,15 +107,11 @@ export interface Intake { city: string; kind: 'read' | 'stored'; runId: string |
 export type ListingTag = 'new' | 'merged' | 'price' | 'unseen' | 'off'
 export interface ListingIntakeRecord {
   date: string | null; price: number | null; address: string | null; type: string | null; verdict: 'keep' | 'drop'; tag: ListingTag
-  reason: string; publishers: string[]; links: string[]; firstSeen?: string | null; lastSeen?: string | null; offAt?: string; was?: number
-}
-export interface ListingPublisher {
-  provider: string; name: string; readAt?: string; rows?: number; code?: number; until?: string
-  state: 'ok' | 'partial' | 'refused' | 'failed' | 'paused' | 'idle'
+  reason: string; sites?: number; firstSeen?: string | null; lastSeen?: string | null; offAt?: string; was?: number
 }
 export interface ListingIntake {
   city: string; kind: 'listings'; generatedAt: string; readAt: string | null; homes: number; seenThisWeek?: number; unseenDays: number
-  publishers: ListingPublisher[]; offMarket: { count: number; shown: number }; counts: Partial<Record<ListingTag, number>>
+  sites?: Record<string, number>; offMarket: { count: number; shown: number }; counts: Partial<Record<ListingTag, number>>
   skipped?: { date?: number; price?: number }; records: ListingIntakeRecord[]
 }
 

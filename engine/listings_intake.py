@@ -1,10 +1,10 @@
 """<city>/listings-intake.json for the pipeline page: the newest homes the listing harvest took in, and what it did with
-each, plus where each publisher stands. Standard library only; written by engine/listing_cards.py next to the cards.
+each, plus how many sites are in each state. Standard library only; written by engine/listing_cards.py next to the cards.
 
 Reads the merged <city>/listings.json and <city>/harvest-state.json from the listings folder (engine/live_listings.py)
 and, for homes a property page said are no longer for sale, <city>/listing-tags.json from the site folder (the only
-stored place an address for such a home can still be). Facts only: list date, asking price, address, home type,
-publisher names and the listing's public links. Never descriptions, photos or broker names.
+stored place an address for such a home can still be). Facts only: list date, asking price, address, home type
+and how many sites list the home. Never site names, links, descriptions, photos or broker names.
 
 Verdicts ("tag" says which):
   keep / new      one publisher lists the home; the harvest added it as a home of its own
@@ -104,11 +104,6 @@ def _publishers(row):
     return names
 
 
-def _links(row):
-    urls = [row.get("url")] + [e.get("url") for e in row.get("sources") or [] if isinstance(e, dict)]
-    return list(dict.fromkeys(u for u in urls if isinstance(u, str) and u.startswith("http")))
-
-
 def record_for(row, city, read_at):
     entries = sorted((e for e in row.get("sources") or [] if isinstance(e, dict)), key=lambda e: e.get("asOf") or "", reverse=True)
     names = _publishers(row)
@@ -131,7 +126,7 @@ def record_for(row, city, read_at):
         parts.append("new")
     out = {"date": row.get("date"), "price": row.get("price") if type(row.get("price")) in (int, float) else None,
            "address": row.get("address") or None, "type": infer_type(row, city), "verdict": "keep", "tag": tag,
-           "reason": " · ".join(parts), "publishers": names, "links": _links(row),
+           "reason": " · ".join(parts), "sites": len(names) or 1,
            "firstSeen": row.get("firstSeen"), "lastSeen": row.get("lastSeen")}
     if was is not None:
         out["was"] = was
@@ -155,9 +150,17 @@ def dropped(off, tags_doc):
             continue
         out.append({"date": t.get("date"), "price": t.get("price") if type(t.get("price")) in (int, float) else None,
                     "address": t["address"], "type": None, "verdict": "drop", "tag": "off", "reason": "no longer for sale",
-                    "publishers": [t["source"]] if t.get("source") else [], "links": [url] if url.startswith("http") else [],
+                    "sites": 1,
                     "offAt": day})
     return out
+
+
+def site_counts(publishers):
+    """How many sites are in each state. The published file never names a site or links to one."""
+    counts = {}
+    for p in publishers:
+        counts[p["state"]] = counts.get(p["state"], 0) + 1
+    return counts
 
 
 def build(city, listings, state, tags_doc, now):
@@ -177,7 +180,7 @@ def build(city, listings, state, tags_doc, now):
         tags[r["tag"]] = tags.get(r["tag"], 0) + 1
     doc = {"city": city, "kind": "listings", "generatedAt": now.isoformat(timespec="seconds"), "readAt": listings.get("asOf"),
            "homes": len(rows), "seenThisWeek": listings.get("seenThisWeek"), "unseenDays": UNSEEN_DAYS,
-           "publishers": publishers, "offMarket": {"count": len(off), "shown": tags.get("off", 0)},
+           "sites": site_counts(publishers), "offMarket": {"count": len(off), "shown": tags.get("off", 0)},
            "counts": tags, "records": records}
     if skipped:
         doc["skipped"] = skipped

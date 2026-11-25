@@ -82,7 +82,8 @@ class ListingsIntakeTest(unittest.TestCase):
         self.assertEqual(seen, sorted(seen, reverse=True))
         self.assertEqual(d["records"][0]["address"], "1 Alpha St")
         for r in d["records"]:
-            self.assertTrue({"date", "price", "address", "type", "verdict", "tag", "reason", "publishers", "links"} <= set(r))
+            self.assertTrue({"date", "price", "address", "type", "verdict", "tag", "reason", "sites"} <= set(r))
+            self.assertFalse({"publishers", "links"} & set(r))
             self.assertIn(r["verdict"], ("keep", "drop"))
 
     def test_limit(self):
@@ -95,9 +96,8 @@ class ListingsIntakeTest(unittest.TestCase):
 
     def test_verdicts(self):
         a, b, c, d = (self.by_address[k] for k in ("1 Alpha St", "2 Beta St", "3 Gamma St", "4 Delta St"))
-        self.assertEqual((a["verdict"], a["tag"], a["reason"], a["publishers"]), ("keep", "new", "new", ["Movoto"]))
-        self.assertEqual((b["tag"], b["reason"], b["publishers"]), ("merged", "merged · 2 sites", ["Movoto", "Weichert"]))
-        self.assertEqual(b["links"], ["https://www.movoto.com/b/", "https://www.weichert.com/b/"])
+        self.assertEqual((a["verdict"], a["tag"], a["reason"], a["sites"]), ("keep", "new", "new", 1))
+        self.assertEqual((b["tag"], b["reason"], b["sites"]), ("merged", "merged · 2 sites", 2))
         self.assertEqual((c["tag"], c["was"]), ("price", 265000))
         self.assertEqual(c["reason"], "price changed, was $265k · merged · 2 sites")
         self.assertEqual(d["tag"], "unseen")
@@ -107,12 +107,13 @@ class ListingsIntakeTest(unittest.TestCase):
     def test_off_market(self):
         gone = self.by_address["9 Omega St"]
         self.assertEqual((gone["verdict"], gone["tag"], gone["reason"]), ("drop", "off", "no longer for sale"))
-        self.assertEqual(gone["links"], ["https://www.movoto.com/gone-1/"])
         self.assertEqual(self.doc["offMarket"], {"count": 2, "shown": 1})   # gone-2 has no address on file: counted only
-        self.assertFalse(any("gone-2" in u for r in self.doc["records"] for u in r["links"]))
+        self.assertEqual(sum(r["tag"] == "off" for r in self.doc["records"]), 1)
 
     def test_publisher_states(self):
-        p = {e["provider"]: e for e in self.doc["publishers"]}
+        p = {e["provider"]: e for e in li.publisher_status("philadelphia", json.loads(json.dumps(LISTINGS)), STATE, NOW)}
+        self.assertEqual(sum(self.doc["sites"].values()), len(p))
+        self.assertEqual(self.doc["sites"]["refused"], 1)
         self.assertEqual((p["movoto"]["state"], p["movoto"]["rows"], p["movoto"]["name"]), ("partial", 3, "Movoto"))
         self.assertEqual(p["weichert"]["state"], "ok")
         self.assertEqual((p["everyhome"]["state"], p["everyhome"]["code"], p["everyhome"]["until"]),
@@ -122,12 +123,13 @@ class ListingsIntakeTest(unittest.TestCase):
         self.assertEqual(p["northrop"]["state"], "idle")
         self.assertNotIn("onekey", p)          # does not cover Philadelphia
         self.assertEqual(self.doc["skipped"], {"date": 12, "price": 1})
-        later = li.build("philadelphia", LISTINGS, STATE, TAGS, datetime(2026, 11, 26, tzinfo=timezone.utc))
-        self.assertNotEqual({e["provider"]: e for e in later["publishers"]}["everyhome"]["state"], "refused")
+        later = li.publisher_status("philadelphia", LISTINGS, STATE, datetime(2026, 11, 26, tzinfo=timezone.utc))
+        self.assertNotEqual({e["provider"]: e for e in later}["everyhome"]["state"], "refused")
 
     def test_nothing_forbidden(self):
         text = json.dumps(self.doc)
-        for word in ("photos", "description", "broker", "summary", "Jane", "Sunny", "lastError", "search", "Home-Search"):
+        for word in ("photos", "description", "broker", "summary", "Jane", "Sunny", "lastError", "search", "Home-Search",
+                     "Movoto", "movoto", "Weichert", "weichert", "everyhome", "trulia", "http", "provider", "publishers", "links"):
             self.assertNotIn(word, text)
         self.assertFalse(re.search(r"https?://[^\"\s]+\.(?:jpe?g|png|gif|webp)\b", text, re.I))
 

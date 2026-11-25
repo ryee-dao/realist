@@ -15,6 +15,11 @@ on:
   push:
     branches: [main]
     paths: ["engine/**", "web/**", ".github/workflows/pipeline.yml"]
+  # After each listings harvest (four a day) the site is rebuilt so new homes show up the same day. These runs
+  # do not contact the cities' record systems again: they rebuild from the stored records (see the harvest step).
+  workflow_run:
+    workflows: ["Harvest live listings"]
+    types: [completed]
 
 permissions: {}      # each job below asks only for what it needs
 
@@ -24,6 +29,8 @@ concurrency:
 
 jobs:
   run:
+    # a harvest that failed has nothing new to publish
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 90
     permissions:
@@ -59,7 +66,13 @@ jobs:
           HUD_CENSUS_API_KEY: ${{ secrets.HUD_CENSUS_API_KEY }}   # optional HUD USER API token: Small Area Fair Market Rents
           CENSUS_API_KEY: ${{ secrets.CENSUS_API_KEY }}   # optional; without it the ACS Summary File is read instead
           FULL: ${{ inputs.full }}
+          EVENT: ${{ github.event_name }}
         run: |
+          if [ "$EVENT" = "workflow_run" ]; then
+            # started by a listings harvest: rebuild from the store without fetching public records again
+            python -m engine build
+            exit
+          fi
           args=()
           if [ "$FULL" = "true" ]; then args+=(--full); fi
           python -m engine run "${args[@]}"
@@ -136,6 +149,13 @@ jobs:
             --cache-dir store/listing-analysis || echo "::warning::Could not build listing tags"
           # The New listings page's cards: merged listings + this run's area figures and price model (and tags if present)
           python -m engine.listing_cards --output web/public/data --listings harvested-listings --store store || echo "::warning::Could not build listing cards"
+          # These were only inputs to the two steps above; no page reads them, so they are not published.
+          # Philadelphia's sales.json stays: the Photo tags workflow fetches it from the deployed site.
+          for city in philadelphia nyc chicago; do
+            rm -f "web/public/data/$city/listing-tags.json" "web/public/data/$city/model-residuals.json" \
+                  "web/public/data/$city/model-predictor.json"
+            if [ "$city" != philadelphia ]; then rm -f "web/public/data/$city/sales.json"; fi
+          done
 
       # Publish guard: only defect crops may ship; held photos (engine/photo_hold.py) and publisher photo URLs in the
       # analysis store must never reach the site or the data branch.

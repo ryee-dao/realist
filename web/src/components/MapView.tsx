@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react'
 import L from 'leaflet'
+import { keepTipsInside } from '../lib/mapTip'
 import '../styles/scales.css'
 import { cssVar, Theme } from '../lib/hooks'
 import { escapeHtml } from '../lib/safeUrl'
@@ -51,6 +52,7 @@ export default function MapView({ center, zoom, points, theme, selected, onSelec
 
   useEffect(() => {
     const m = L.map(el.current!, { preferCanvas: true, scrollWheelZoom: false, zoomSnap: 0.5 }).setView(center, zoom)
+    keepTipsInside(m)
     m.on('click', () => m.scrollWheelZoom.enable())
     m.on('mouseout', () => m.scrollWheelZoom.disable())
     touchFriendly(m)

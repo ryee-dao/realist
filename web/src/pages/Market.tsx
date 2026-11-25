@@ -272,6 +272,7 @@ function MoverCard({ title, rows, city, noun, onPick }: { title: string; rows: A
         <div><h3>{title}</h3><p>Median price, last 12 months vs the 12 before. Areas with 40+ sales.</p></div>
         <a className="ghost small" href={`#/${city.id}/areas`}>All areas</a>
       </header>
+      <div className="table-scroll">
       <table className="data compact movers">
         <thead><tr><th>{noun}</th><th className="num">Median</th><th className="num">1-yr change</th><th>6-year trend</th></tr></thead>
         <tbody>
@@ -285,6 +286,7 @@ function MoverCard({ title, rows, city, noun, onPick }: { title: string; rows: A
           ))}
         </tbody>
       </table>
+      </div>
     </section>
   )
 }

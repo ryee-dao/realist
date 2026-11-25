@@ -1,0 +1,89 @@
+/* ---- Data Engine: the page's look and motion ----
+   Entrances (cards rise, the ring sweeps, bars and meters grow in turn), slowly breathing status lights,
+   green-to-cyan colour with a light travelling along the bars, and caps card titles.
+   Pipeline.tsx always puts `fx-d` on `.pipe`. All motion is off under prefers-reduced-motion. */
+
+@keyframes fx-rise { from { opacity: 0; transform: translateY(8px); } }
+@keyframes fx-fade { from { opacity: 0; } }
+@keyframes fx-grow-x { from { transform: scaleX(0); } }
+@keyframes fx-grow-y { from { transform: scaleY(0); } }
+@keyframes fx-sweep { from { stroke-dashoffset: var(--fx-dash, 0); } to { stroke-dashoffset: 0; } }
+@keyframes fx-a-breathe { 50% { opacity: 1; } }
+@keyframes fx-a-caret { 0%, 45% { opacity: 1; } 55%, 100% { opacity: 0.1; } }
+@keyframes fx-c-shine { 0% { background-position: 250% 0, 0 0; } 45%, 100% { background-position: -150% 0, 0 0; } }
+@keyframes fx-c-run { from { background-position: -100% 0; } to { background-position: 200% 0; } }
+@keyframes fx-c-clock { to { background-position: -200% 0; } }
+
+/* Coverage meters carry one gradient across the whole track, so a 42% bar stops at the 42% colour. */
+.pipe.fx-d { --fx-cyan: #3fc6d9; --fx-edge: color-mix(in srgb, var(--brand) 55%, transparent); --fx-edge-2: color-mix(in srgb, #3fc6d9 45%, transparent);
+  --fx-shine: rgba(255, 255, 255, 0.45); --fx-glow: color-mix(in srgb, var(--brand) 40%, transparent); --fx-glow-soft: color-mix(in srgb, var(--brand) 18%, transparent); }
+:root[data-theme="light"] .pipe.fx-d { --fx-cyan: #0b8aa0; --fx-edge: color-mix(in srgb, var(--brand) 70%, transparent); --fx-edge-2: color-mix(in srgb, #0b8aa0 65%, transparent);
+  --fx-shine: rgba(255, 255, 255, 0.7); --fx-glow: color-mix(in srgb, var(--brand) 22%, transparent); --fx-glow-soft: color-mix(in srgb, var(--brand) 10%, transparent); }
+.fx-d .fx-g0 { stop-color: var(--brand); } .fx-d .fx-g1 { stop-color: var(--fx-cyan); }
+
+/* C: gradient edges and colour */
+.fx-d .card { border-color: transparent;
+  background: linear-gradient(var(--surface), var(--surface)) padding-box,
+    linear-gradient(135deg, var(--fx-edge), var(--line) 38%, var(--line) 62%, var(--fx-edge-2)) border-box; }
+:root[data-theme="light"] .fx-d .card { box-shadow: 0 10px 30px -22px color-mix(in srgb, #0b8aa0 60%, transparent); }
+.fx-d .ring-fill { stroke: var(--fx-grad, var(--series-1)); filter: drop-shadow(0 0 4px var(--fx-glow)); }
+.fx-d .key-box.kept, .fx-d .sm-key:not(.filling) { background: linear-gradient(90deg, var(--brand), var(--fx-cyan)); }
+.fx-d .seg .kept {
+  background: linear-gradient(100deg, transparent 0 40%, var(--fx-shine) 50%, transparent 60% 100%) 250% 0 / 250% 100% no-repeat,
+    linear-gradient(90deg, var(--brand), var(--fx-cyan)); }
+/* meters: the gradient is sized to the track (container units), not to the filled part */
+.fx-d .meter .bar-track { container-type: inline-size; background: color-mix(in srgb, var(--fx-cyan) 12%, var(--brand-soft)); }
+.fx-d .meter .bar-fill {
+  background: linear-gradient(100deg, transparent 0 40%, var(--fx-shine) 50%, transparent 60% 100%) 250% 0 / 250% 100% no-repeat,
+    linear-gradient(90deg, var(--brand), var(--fx-cyan)) 0 0 / 100cqw 100% no-repeat; }
+.fx-d .sm-bar:not(.filling) { fill: var(--fx-grad, var(--series-1)); }
+.fx-d .sm-split { stroke: var(--fx-cyan); opacity: 0.6; }
+.fx-d .clock { background: linear-gradient(90deg, var(--brand-ink), var(--fx-cyan), var(--brand-ink)) 0 0 / 200% 100%;
+  -webkit-background-clip: text; background-clip: text; color: transparent; filter: drop-shadow(0 0 10px var(--fx-glow)); }
+.fx-d .term-box { position: relative; box-shadow: inset 0 1px 0 var(--fx-glow-soft); }
+.fx-d .term-box::before { content: ""; position: absolute; left: 0; right: 0; top: 0; height: 2px; z-index: 1; pointer-events: none;
+  background: linear-gradient(90deg, transparent, var(--brand), var(--fx-cyan), transparent) 0 0 / 50% 100% no-repeat; }
+.fx-d .term-prompt, .fx-d .term-line.cursor { color: var(--fx-cyan); }
+.fx-d .chip.pass { background: linear-gradient(90deg, color-mix(in srgb, var(--good) 18%, var(--surface)), color-mix(in srgb, var(--fx-cyan) 12%, var(--surface))); }
+.fx-d .segmented > .on { background: linear-gradient(90deg, var(--brand-soft), color-mix(in srgb, var(--fx-cyan) 18%, var(--brand-soft))); }
+.fx-d .verify a { transition: border-color 0.2s; }
+.fx-d .verify a:hover { border-color: var(--fx-cyan); }
+
+/* A: lights with a soft glow that breathes */
+.fx-d .light { position: relative; }
+.fx-d .light.pass, .fx-d .light.src-pulled { box-shadow: 0 0 6px color-mix(in srgb, var(--good) 55%, transparent); }
+.fx-d .light.src-unchanged { box-shadow: inset 0 0 0 2px var(--line-strong); }
+
+/* B: caps card titles only; sub-captions stay sentence case */
+.fx-d .card-head h3 { font: 600 12.5px/1.5 var(--mono); letter-spacing: 0.11em; text-transform: uppercase; overflow-wrap: anywhere; }
+.fx-d .card-head p { text-transform: none; letter-spacing: normal; }
+
+@media (prefers-reduced-motion: no-preference) {
+  /* A: entrances */
+  .fx-d > * { animation: fx-rise 0.55s cubic-bezier(0.2, 0.7, 0.2, 1) backwards; }
+  .fx-d > :nth-child(2) { animation-delay: 0.06s; } .fx-d > :nth-child(3) { animation-delay: 0.12s; }
+  .fx-d > :nth-child(4) { animation-delay: 0.18s; } .fx-d > :nth-child(5) { animation-delay: 0.24s; }
+  .fx-d > :nth-child(6) { animation-delay: 0.3s; } .fx-d > :nth-child(7) { animation-delay: 0.36s; }
+  .fx-d .meter:nth-child(2) { --fx-d: 0.12s; } .fx-d .meter:nth-child(3) { --fx-d: 0.24s; }
+  .fx-d .board-col:nth-child(2) .seg, .fx-d .board-col:nth-child(2) .ring-fill { --fx-d: 0.15s; }
+  .fx-d .board-col:nth-child(3) .seg, .fx-d .board-col:nth-child(3) .ring-fill { --fx-d: 0.3s; }
+  .fx-d .ring-fill { animation: fx-sweep 1.3s cubic-bezier(0.3, 0.6, 0.2, 1) calc(0.25s + var(--fx-d, 0s)) backwards; }
+  .fx-d .seg { transform-origin: left center; animation: fx-grow-x 1s cubic-bezier(0.3, 0.6, 0.2, 1) calc(0.35s + var(--fx-d, 0s)) backwards; }
+  .fx-d .meter .bar-track { transform-origin: left center; animation: fx-grow-x 1s cubic-bezier(0.3, 0.6, 0.2, 1) calc(0.45s + var(--fx-d, 0s)) backwards; }
+  .fx-d .sm-bar { transform-box: fill-box; transform-origin: 50% 100%; animation: fx-grow-y 0.7s cubic-bezier(0.3, 0.6, 0.2, 1) calc(0.3s + var(--i, 0) * 22ms) backwards; }
+  .fx-d .reasons li, .fx-d .gate-list li { animation: fx-fade 0.5s ease-out backwards; }
+  .fx-d .reasons li:nth-child(n+2), .fx-d .gate-list li:nth-child(n+2) { animation-delay: 0.1s; }
+  .fx-d .reasons li:nth-child(n+3), .fx-d .gate-list li:nth-child(n+3) { animation-delay: 0.2s; }
+  .fx-d .reasons li:nth-child(n+4), .fx-d .gate-list li:nth-child(n+4) { animation-delay: 0.3s; }
+  .fx-d .reasons li:nth-child(n+6), .fx-d .gate-list li:nth-child(n+6) { animation-delay: 0.4s; }
+  /* A: breathing lights */
+  .fx-d .light.pass::after, .fx-d .light.src-pulled::after { content: ""; position: absolute; inset: -3px; border-radius: 50%;
+    box-shadow: 0 0 8px 1px color-mix(in srgb, var(--good) 70%, transparent); opacity: 0; animation: fx-a-breathe 3.6s ease-in-out infinite; }
+  .fx-d .light:nth-child(2n)::after { animation-delay: -1.2s; } .fx-d .light:nth-child(3n)::after { animation-delay: -2.4s; }
+  .fx-d .term-line.cursor { animation: fx-a-caret 1.1s ease-in-out infinite; }
+  /* C: light travelling along the bars, the terminal edge and the clock */
+  .fx-d .seg .kept, .fx-d .meter .bar-fill { animation: fx-c-shine 4.5s ease-in-out 1.4s infinite; }
+  .fx-d .meter:nth-child(2) .bar-fill { animation-delay: 1.7s; } .fx-d .meter:nth-child(3) .bar-fill { animation-delay: 2s; }
+  .fx-d .term-box::before { animation: fx-c-run 3.5s linear infinite; }
+  .fx-d .clock { animation: fx-c-clock 6s linear infinite; }
+}

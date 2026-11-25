@@ -7,6 +7,7 @@ import { pct, usd, usdCompact } from '../lib/format'
 import { rentLines, rentValue, yieldRange } from '../lib/rent'
 import { Breakdown, Card, CropImage, LOW_MSG, Mark, Point, money, monthYear, Pair, shortDate, WarnMark } from './listingParts'
 import { safeUrl } from '../lib/safeUrl'
+import { MiniBar, Tip } from './MiniBar'
 
 /** <city>/listing-detail/<name>.json, written by engine/listing_cards.py and loaded on first open. */
 export interface Detail {
@@ -183,18 +184,6 @@ function Price({ c, detail, city }: { c: Card; detail: Detail | null; city: City
   </>
 }
 
-/** A thin bar for this area's value with a tick at the city figure (the Areas detail panel's pattern). */
-function MiniBar({ v, c, lo, hi, tone }: { v: number | null; c: number | null; lo: number; hi: number; tone?: 'good' | 'bad' }) {
-  if (v == null) return <span className="a-bar none" />
-  const pos = (x: number) => Math.max(0, Math.min(1, (x - lo) / (hi - lo || 1))) * 100
-  const base = lo < 0 ? pos(0) : 0, p = pos(v)
-  return <span className={`a-bar ${tone ?? ''}`} aria-hidden="true">
-    {lo < 0 && <i className="a-bar-zero" style={{ left: `${base}%` }} />}
-    <i className="a-bar-fill" style={{ left: `${Math.min(base, p)}%`, width: `${Math.max(Math.abs(p - base), 2)}%` }} />
-    {c != null && <i className="a-bar-city" style={{ left: `${pos(c)}%` }} />}
-  </span>
-}
-
 function AreaTab({ c, area, areas, city, tier, ramp, cityGrowth }: { c: Card; area: Area | null; areas: Area[]; city: City; tier: Tier | undefined; ramp: Ramp; cityGrowth: number | null }) {
   const top = useMemo(() => {
     const q95 = (f: (a: Area) => number | null | undefined) => {
@@ -209,13 +198,14 @@ function AreaTab({ c, area, areas, city, tier, ramp, cityGrowth }: { c: Card; ar
   const level = (v: number | null | undefined, cv: number | null | undefined, t: number) => ({ v: v ?? null, c: cv ?? null, lo: 0, hi: Math.max(t, v ?? 0, cv ?? 0) * 1.05 })
   const g1 = area.priceGrowth1 ?? area.medianYoY
   const m = Math.max(top.g1, Math.abs(g1 ?? 0), Math.abs(cityGrowth ?? 0)) * 1.1
-  const rows: { label: string; value: string; title?: string; bar?: ReturnType<typeof level> & { tone?: 'good' | 'bad' } }[] = [
-    { label: 'Median sold', value: usd(area.median12), bar: level(area.median12, city.kpi.median12, top.price) },
-    { label: 'Growth, 1 yr', value: g1 == null ? '–' : pct(g1), bar: { v: g1 ?? null, c: cityGrowth, lo: -m, hi: m, tone: g1 == null || g1 === 0 ? undefined : g1 > 0 ? 'good' : 'bad' } },
+  const pc = (v: number | null | undefined) => (v == null ? null : `${v.toFixed(1)}%`)
+  const rows: { label: string; value: string; title?: string; bar?: ReturnType<typeof level>; tip?: Tip }[] = [
+    { label: 'Median sold', value: usd(area.median12), bar: level(area.median12, city.kpi.median12, top.price), tip: { area: usdCompact(area.median12), city: usdCompact(city.kpi.median12) } },
+    { label: 'Growth, 1 yr', value: g1 == null ? '–' : pct(g1), bar: { v: g1 ?? null, c: cityGrowth, lo: -m, hi: m }, tip: { area: pct(g1), city: cityGrowth == null ? null : pct(cityGrowth), better: 'up' } },
     { label: 'Rent', value: rentValue(area), title: area.rent == null ? undefined : rentLines(area, cx).join('\n') },
-    { label: 'Rent yield', value: area.yield == null ? '–' : `${area.yield.toFixed(1)}%`, bar: level(area.yield, cx.yield, top.yield), title: yieldRange(area) ?? undefined },
-    { label: 'Violent', value: area.violentRate?.toFixed(1) ?? '–', bar: level(area.violentRate, cx.violentRate, top.violent) },
-    { label: 'Property', value: area.propertyRate?.toFixed(1) ?? '–', bar: level(area.propertyRate, cx.propertyRate, top.property) },
+    { label: 'Rent yield', value: area.yield == null ? '–' : `${area.yield.toFixed(1)}%`, bar: level(area.yield, cx.yield, top.yield), title: yieldRange(area) ?? undefined, tip: { area: pc(area.yield) ?? '–', city: pc(cx.yield), better: 'up' } },
+    { label: 'Violent / 1,000', value: area.violentRate?.toFixed(1) ?? '–', bar: level(area.violentRate, cx.violentRate, top.violent), tip: { area: area.violentRate?.toFixed(1) ?? '–', city: cx.violentRate?.toFixed(1) ?? null, better: 'down' } },
+    { label: 'Property / 1,000', value: area.propertyRate?.toFixed(1) ?? '–', bar: level(area.propertyRate, cx.propertyRate, top.property), tip: { area: area.propertyRate?.toFixed(1) ?? '–', city: cx.propertyRate?.toFixed(1) ?? null, better: 'down' } },
   ]
   return <>
     <div className="lp-area-head">
@@ -225,9 +215,8 @@ function AreaTab({ c, area, areas, city, tier, ramp, cityGrowth }: { c: Card; ar
     </div>
     <p className="muted lc-small">{tier ? `Tier ${tier} under your tier weights.` : 'Too few sales for a tier.'}</p>
     <div className="a-rows">{rows.map((r) => <div key={r.label} className="a-row" title={r.title}>
-      <span className="a-label">{r.label}</span><span className="a-val">{r.value}</span>{r.bar ? <MiniBar {...r.bar} /> : <span className="a-bar none" />}
+      <span className="a-label">{r.label}</span><span className="a-val">{r.value}</span>{r.bar ? <MiniBar {...r.bar} tip={r.tip} /> : <span className="a-bar none" />}
     </div>)}</div>
-    <p className="a-kv-note">Recorded sales; incidents per 1,000 residents. Bar: this area · line: city.</p>
   </>
 }
 

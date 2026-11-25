@@ -1,15 +1,17 @@
+/** One shared formatter: building one per call (toLocaleString) is slow in long tables. Same output. */
+const NF = new Intl.NumberFormat('en-US')
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
 
-export const num = (n: number | null | undefined) => (n == null ? '–' : Math.round(n).toLocaleString('en-US'))
+export const num = (n: number | null | undefined) => (n == null ? '–' : NF.format(Math.round(n)))
 
-export const usd = (n: number | null | undefined) => (n == null ? '–' : '$' + Math.round(n).toLocaleString('en-US'))
+export const usd = (n: number | null | undefined) => (n == null ? '–' : '$' + NF.format(Math.round(n)))
 
 export function usdCompact(n: number | null | undefined): string {
   if (n == null) return '–'
   const a = Math.abs(n)
   if (a >= 1e6) return '$' + (n / 1e6).toFixed(a >= 1e7 ? 1 : 2).replace(/\.?0+$/, '') + 'M'
   if (a >= 1e4) return '$' + Math.round(n / 1e3) + 'K'
-  return '$' + Math.round(n).toLocaleString('en-US')
+  return '$' + NF.format(Math.round(n))
 }
 
 export function compact(n: number | null | undefined): string {
@@ -17,7 +19,7 @@ export function compact(n: number | null | undefined): string {
   const a = Math.abs(n)
   if (a >= 1e6) return (n / 1e6).toFixed(1).replace(/\.0$/, '') + 'M'
   if (a >= 1e4) return Math.round(n / 1e3) + 'K'
-  return Math.round(n).toLocaleString('en-US')
+  return NF.format(Math.round(n))
 }
 
 export const pct = (n: number | null | undefined, digits = 1) =>
