@@ -1,11 +1,11 @@
 {
  "city": "philadelphia",
  "kind": "read",
- "readAt": "2026-11-25T22:31:39+00:00",
- "runId": "20261125T223134Z",
+ "readAt": "2026-11-26T10:09:52+00:00",
+ "runId": "20261126T100947Z",
  "samples": [
   {
-   "readAt": "2026-11-25T22:31:36+00:00",
+   "readAt": "2026-11-26T10:09:49+00:00",
    "records": [
     {
      "address": "1838 Mountain St",
@@ -491,7 +491,7 @@
    "source": "Deed transfers + property records"
   },
   {
-   "readAt": "2026-11-25T22:31:39+00:00",
+   "readAt": "2026-11-26T10:09:52+00:00",
    "records": [
     {
      "address": "3323 Glenview St",
